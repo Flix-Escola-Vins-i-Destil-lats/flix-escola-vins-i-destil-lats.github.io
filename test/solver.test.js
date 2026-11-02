@@ -70,9 +70,9 @@ import { makeInstance } from './fixtures/instances.mjs';
 test('regresión: 15 paradas donde la versión anterior llegaba 10 min más tarde de lo necesario', () => {
   const { ctx } = makeInstance(15, 4);
   const best = optimize(ctx);
-  // Óptimo exacto calculado en la auditoría: coste 30083,23 y 29,44 min de retraso inevitable.
-  assert.ok(best.cost < 30083.3, `coste ${best.cost}`);
+  // Óptimo exacto calculado en la auditoría: 29,44 min de retraso inevitable y vuelta a los 1033,3 min.
   assert.ok(best.late < 29.5, `retraso ${best.late}`);
+  assert.ok(best.end < 1033.3 + 3, `vuelta ${best.end}`);
 });
 
 test('30 paradas en menos de 1 s', () => {
@@ -80,4 +80,16 @@ test('30 paradas en menos de 1 s', () => {
   const t0 = Date.now();
   optimize(ctx);
   assert.ok(Date.now() - t0 < 1000);
+});
+
+test('a igual hora de vuelta, entrega antes en vez de esperar a que abra otro', () => {
+  // A abre a las 9:00 y está a 5 min; B está abierto y a 6 min. Hacer B primero no retrasa nada.
+  const matrix = [
+    [0, 5, 6],
+    [5, 0, 4],
+    [6, 4, 0],
+  ];
+  const stops = [{ windows: [[540, 780]], service: 10 }, { windows: [], service: 10 }];
+  const best = optimize({ matrix, stops, start: 450, returnTo: false });
+  assert.deepEqual(best.order, [2, 1]);
 });

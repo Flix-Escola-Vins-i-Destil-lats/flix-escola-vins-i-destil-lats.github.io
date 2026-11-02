@@ -3,7 +3,7 @@ import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, traffic
 import { computePlan } from './planner.js';
 import * as store from './store.js';
 
-export const VERSION = '1.2.1';
+export const VERSION = '1.3.0';
 
 // ---------- Utilidades ----------
 
@@ -35,6 +35,21 @@ const I = {
 };
 
 const FAIL_REASONS = ['Cerrado', 'No había nadie', 'No aceptan el pedido', 'Otro motivo'];
+
+// Àrea DUM (carga y descarga): hay que validar cada parada en la app SPRO; máximo 30 minutos.
+const DUM_MINUTES = 30;
+const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
+function sproUrl() {
+  if (isIOS) return 'https://apps.apple.com/app/id1500407078';
+  const store = encodeURIComponent('https://play.google.com/store/apps/details?id=cat.bcn.bsm.spro');
+  return `intent://open#Intent;scheme=cat.bcn.bsm.spro;package=cat.bcn.bsm.spro;S.browser_fallback_url=${store};end`;
+}
+function dumChip(r, cur) {
+  if (r.dum?.id !== cur.id) return '';
+  const left = Math.ceil(DUM_MINUTES - (Date.now() - r.dum.at) / 60000);
+  if (left <= 0) return '<span class="chip late solid" id="dum-chip">Zona DUM: tiempo agotado</span>';
+  return `<span class="chip ${left <= 5 ? 'late solid' : 'wait'}" id="dum-chip">Zona DUM: quedan ${left} min</span>`;
+}
 
 const ui = {
   tab: 'route',
@@ -266,7 +281,7 @@ function renderActive(r) {
       <div class="label">${finished === 0 ? 'Primera parada' : 'Siguiente parada'}</div>
       <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
       <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
-      <div class="chips" style="margin-top:10px">${windowsChips(cur.windows)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(leg.late)}</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
+      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${windowsChips(cur.windows)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(leg.late)}</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
         <div><b>${leg ? fmt(leg.arrive) : '--:--'}</b><span>llegada</span></div>
         <div><b>${leg ? Math.round(leg.drive) : '–'}</b><span>min de viaje</span></div>
@@ -274,6 +289,7 @@ function renderActive(r) {
       </div>
       ${cur.notes ? `<details class="notes"><summary>${I.info}<span class="clamp2">${esc(cur.notes)}</span></summary><p>${esc(cur.notes)}</p></details>` : ''}
       <div class="minor">
+        <a class="pill spro" href="${esc(sproUrl())}" data-action="spro" data-keep-default="1">${I.pin}SPRO · ${r.dum?.id === cur.id ? 'otra vez' : 'aparcar'}</a>
         ${cur.phone ? `<a class="pill" href="tel:${esc(cur.phone.replace(/[^\d+]/g, ''))}">${I.phone}Llamar</a>` : ''}
         <button class="pill" data-action="open-fail">${I.ban}No entregado</button>
         ${pendingCount > 1 ? '<button class="pill" data-action="postpone">Dejar para luego</button>' : ''}
@@ -310,6 +326,19 @@ function renderActionBar() {
       : `<button class="btn forest big" data-action="next">${I.check}Entregado</button>`}`;
 }
 
+function backupAge() {
+  const at = settings().lastBackupAt;
+  if (!at) return 'Aún no has hecho ninguna.';
+  const days = Math.floor((Date.now() - at) / 86400000);
+  return days === 0 ? 'Última: hoy.' : days === 1 ? 'Última: ayer.' : `Última: hace ${days} días.`;
+}
+
+// Recordatorio suave: con clientes guardados y sin copia en una semana.
+function needsBackup() {
+  const at = settings().lastBackupAt || 0;
+  return store.clientList().length >= 3 && Date.now() - at > 7 * 86400000;
+}
+
 function renderDone(r) {
   const s = settings();
   const done = r.stops.filter((x) => x.done).sort((a, b) => a.doneAt - b.doneAt);
@@ -322,6 +351,7 @@ function renderDone(r) {
       <div style="height:10px"></div>
       <button class="btn ghost block" data-action="goto-tomorrow">Preparar la ruta de mañana</button>
     </div>
+    ${needsBackup() ? `<div class="notice gold">${I.info}<div class="grow">Hace más de una semana que no guardas una copia de tus clientes. <button class="linkbtn" data-action="backup" style="color:inherit">Hacer copia ahora</button></div></div>` : ''}
     ${finishedList(r)}`;
 }
 
@@ -339,7 +369,7 @@ function renderClients() {
   html += list.map((c) => `<button class="client" data-action="edit-client" data-key="${esc(c.key)}">
       <span class="row between"><span class="name ellipsis">${esc(c.name)}</span>${c.visits ? `<span class="tiny faint">${esc(plural(c.visits, 'visita', 'visitas'))}</span>` : ''}</span>
       <span class="addr ellipsis">${esc(c.label || c.address || 'Sin dirección')}</span>
-      <span class="chips">${windowsChips(c.windows)}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
+      <span class="chips">${windowsChips(c.windows)}${c.serviceLearned ? `<span class="chip any">Descarga ~${esc(c.service)} min</span>` : ''}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
     </button>`).join('');
   return html;
 }
@@ -388,11 +418,13 @@ function renderSettings() {
     <button class="btn line" data-action="change-depot">Cambiar</button></div>
   </div>
 
-  <h2 class="section-title">Clientes y copias</h2>
+  <h2 class="section-title">Copias y compañeros</h2>
   <div class="card">
-    <div class="small muted" style="margin-bottom:12px">Exporta tus clientes para guardar una copia (en Drive o en un mensaje a ti mismo) o pasársela a otro repartidor. Al importar se suman a los que ya hay sin borrar nada.</div>
+    <div class="small muted" style="margin-bottom:12px"><b>Copia de seguridad:</b> guarda clientes, horarios y rutas (sin tus claves) en Drive o en un mensaje a ti mismo. ${backupAge()}</div>
+    <button class="btn line block" data-action="backup">Hacer copia de seguridad</button>
+    <div class="small muted" style="margin:16px 0 12px"><b>Pasar clientes</b> a otro repartidor, o <b>importar</b> una copia o los clientes de un compañero: se suman a los tuyos sin borrar nada.</div>
     <div class="actions2" style="margin:0">
-      <button class="btn ghost" data-action="export">Exportar clientes</button>
+      <button class="btn ghost" data-action="export">Pasar clientes</button>
       <label class="btn ghost" style="cursor:pointer">Importar<input type="file" id="import-file" accept="application/json,.json" hidden></label>
     </div>
     <div class="tiny ${ui.persisted ? 'faint' : 'warn-ink'}" style="margin-top:12px">${ui.persisted ? 'Datos protegidos: el móvil no los borrará aunque le falte espacio.' : 'El móvil podría borrar los datos si se queda sin espacio o borras los datos de Chrome: haz una copia de vez en cuando.'}</div>
@@ -504,7 +536,8 @@ function sheetStop(sh) {
       <label class="field" style="flex:1"><span>Descarga (min)</span><input class="input" type="number" inputmode="numeric" id="f-service" value="${esc(d.service ?? settings().service)}" min="1" max="120"></label>
       <label class="field" style="flex:1.4"><span>Teléfono</span><input class="input" type="tel" id="f-phone" value="${esc(d.phone || '')}" placeholder="Opcional"></label>
     </div>
-    <label class="field"><span>Notas para la entrega</span><input class="input" id="f-notes" value="${esc(d.notes || '')}" placeholder="Ej. entrar por la puerta de atrás"></label>
+    ${serviceHint(sh)}
+    <label class="field"><span>Notas para la entrega</span><input class="input" id="f-notes" value="${esc(d.notes || '')}" placeholder="Ej. entrar por la puerta de atrás o plaza DUM 08-123"></label>
 
     <div class="foot">
       <button class="btn gold big block" data-action="save-stop">${isClient ? 'Guardar cliente' : sh.id ? 'Guardar' : 'Añadir a la ruta'}</button>
@@ -513,6 +546,15 @@ function sheetStop(sh) {
       ${isClient ? '<button class="btn danger block" data-action="forget-client">Olvidar este cliente</button>' : ''}
       <button class="btn ghost block" data-action="close">Cancelar</button>
     </div>`;
+}
+
+function serviceHint(sh) {
+  const d = sh.draft;
+  const mem = d.name && store.findClient(d.name);
+  const parts = [];
+  if (mem?.serviceLearned && mem.service === d.service) parts.push(`Aprendido de tus últimas ${mem.serviceLog.length} entregas aquí.`);
+  if (d.service > DUM_MINUTES) parts.push(`Si aparcas en zona DUM, el máximo son ${DUM_MINUTES} min (60 con vehículo de cero emisiones).`);
+  return parts.length ? `<div class="hint">${esc(parts.join(' '))}</div>` : '';
 }
 
 function sheetPaste(sh) {
@@ -688,15 +730,17 @@ async function saveStop() {
   }
   const fields = stopFields(d);
   const renamedFrom = sh.mode === 'client' ? sh.key : undefined;
+  if (JSON.parse(sh.initial).service !== d.service) Object.assign(fields, { serviceLog: [], serviceLearned: false });
   store.rememberClient(fields, { renamedFrom });
 
   if (sh.mode !== 'client') {
     const r = currentRoute();
+    const { serviceLog, serviceLearned, ...stopData } = fields;
     if (sh.id) {
       const s = r.stops.find((x) => x.id === sh.id);
-      if (s) Object.assign(s, fields);
+      if (s) Object.assign(s, stopData);
     } else {
-      r.stops.push({ id: uid(), ...fields, done: false });
+      r.stops.push({ id: uid(), ...stopData, done: false });
       if (r.status === 'done') r.status = 'draft';
     }
     store.save();
@@ -766,6 +810,7 @@ async function leave() {
       : { kind: 'same', text: `Ruta confirmada: el orden se mantiene. Vuelta prevista a las ${fmt(plan.end)}.` };
     r.plan = plan; r.planSig = signature(r);
     r.status = 'active'; r.current = plan.order[0]; r.startedAt = departAt.getTime(); r.postponed = [];
+    markCurrent(r, plan.legs[0], departAt.getTime());
     store.save();
   } catch (e) {
     // Sin red: se sale con el plan del día anterior.
@@ -810,6 +855,7 @@ async function replanActive(msg) {
     plan.order.push(...r.postponed.filter((id) => postponed.has(id)));
     r.plan = plan; r.planSig = signature(r);
     r.current = plan.order[0];
+    markCurrent(r, plan.legs[0], Date.now());
     const next = r.stops.find((x) => x.id === r.current);
     const leg = plan.legs[0];
     if (msg !== null) toast(msg || `Siguiente: ${next.name}${leg ? ` · llegada ${fmt(leg.arrive)}` : ''}`, 3200);
@@ -827,6 +873,21 @@ async function replanActive(msg) {
   window.scrollTo({ top: 0, behavior: smooth() });
 }
 
+// Apunta cuándo sales hacia la parada actual y cuánto se prevé de viaje y de espera: al entregarla,
+// lo que sobra es lo que has tardado en descargar.
+function markCurrent(r, leg, since) {
+  const cur = r.stops.find((x) => x.id === r.current);
+  if (!cur || !leg || leg.id !== cur.id) return;
+  cur.trip = { since, drive: leg.drive, wait: leg.wait || 0 };
+}
+
+function learnFrom(cur) {
+  if (!cur.trip) return;
+  const minutes = (Date.now() - cur.trip.since) / 60000 - cur.trip.drive - cur.trip.wait;
+  delete cur.trip;
+  store.learnService(cur.name, minutes);
+}
+
 // Marca la parada actual como hecha (entregada o no) y pasa a la siguiente, con opción de deshacer.
 async function finishCurrent({ failed = null } = {}) {
   const r = currentRoute();
@@ -837,7 +898,10 @@ async function finishCurrent({ failed = null } = {}) {
   if (!failed) {
     const mem = store.findClient(cur.name);
     if (mem) store.rememberClient({ name: mem.name, visits: (mem.visits || 0) + 1, lastVisit: ui.date });
+    learnFrom(cur);
   }
+  delete cur.trip;
+  if (r.dum?.id === cur.id) r.dum = null;
   r.postponed = (r.postponed || []).filter((id) => id !== cur.id);
   store.save();
   await replanActive(null);
@@ -969,6 +1033,12 @@ const actions = {
   },
   'reset-depot': () => { store.setSettings({ depot: store.DEFAULT_DEPOT }); closeSheet(); render(); toast('Salida: Comercial Escolà'); },
   export: () => exportClients(),
+  backup: () => backup(),
+  spro: () => {
+    const r = currentRoute();
+    // Se redibuja después: si el enlace desaparece antes de abrirse, Android no llega a abrir SPRO.
+    if (r.current) { r.dum = { id: r.current, at: Date.now() }; store.save(); setTimeout(render, 600); }
+  },
   'apply-update': () => applyUpdate(),
 };
 
@@ -1041,19 +1111,24 @@ async function testOrs() {
   render();
 }
 
-function exportClients() {
-  const json = store.exportClients();
-  const name = `clientes-ruta-${todayIso()}.json`;
+function shareFile(json, name, title) {
   const file = new File([json], name, { type: 'application/json' });
-  if (navigator.canShare?.({ files: [file] })) {
-    navigator.share({ files: [file], title: 'Clientes · Ruta Escolà' }).catch(() => {});
-    return;
-  }
+  if (navigator.canShare?.({ files: [file] })) return navigator.share({ files: [file], title }).then(() => true, () => false);
   const a = document.createElement('a');
   a.href = URL.createObjectURL(file);
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  return Promise.resolve(true);
+}
+
+function exportClients() {
+  shareFile(store.exportClients(), `clientes-ruta-${todayIso()}.json`, 'Clientes · Ruta Escolà');
+}
+
+async function backup() {
+  const ok = await shareFile(store.exportBackup(), `copia-ruta-escola-${todayIso()}.json`, 'Copia de seguridad · Ruta Escolà');
+  if (ok) { store.markBackup(); toast('Copia guardada ✓'); render(); }
 }
 
 // ---------- Actualizaciones ----------
@@ -1098,7 +1173,7 @@ document.addEventListener('click', (e) => {
   }
   const el = e.target.closest('[data-action]');
   if (el && actions[el.dataset.action]) {
-    e.preventDefault();
+    if (!el.dataset.keepDefault) e.preventDefault();
     if (ui.busy && BLOCKED_WHILE_BUSY.has(el.dataset.action)) return;
     actions[el.dataset.action](el);
     return;
@@ -1122,7 +1197,11 @@ document.addEventListener('change', (e) => {
   if (t.id === 'set-ors') store.setSettings({ orsKey: t.value.trim() });
   if (t.id === 'import-file' && t.files[0]) {
     t.files[0].text().then((txt) => {
-      try { const { added, updated } = store.importClients(txt); toast(`${plural(added, 'cliente nuevo', 'clientes nuevos')} · ${updated} actualizados`); render(); }
+      try {
+        const { added, updated, routes } = store.importClients(txt);
+        toast(`${plural(added, 'cliente nuevo', 'clientes nuevos')} · ${updated} actualizados${routes ? ` · ${plural(routes, 'ruta recuperada', 'rutas recuperadas')}` : ''}`, 4000);
+        render();
+      }
       catch (err) { toast(/grande/.test(err.message) ? 'El archivo es demasiado grande' : 'Ese archivo no es una exportación de la app'); }
       t.value = '';
     });
@@ -1147,11 +1226,37 @@ document.addEventListener('keydown', (e) => {
 // Al volver a la app (p. ej. desde Waze), refresca horas y estado.
 document.addEventListener('visibilitychange', () => { if (!document.hidden && !ui.sheet && !ui.busy) render(); });
 
+// La cuenta atrás de la zona DUM se actualiza cada 20 s sin redibujar la pantalla.
+setInterval(() => {
+  const chip = $('#dum-chip');
+  if (!chip || ui.tab !== 'route') return;
+  const r = currentRoute();
+  const cur = r.stops.find((x) => x.id === r.current && !x.done);
+  if (cur) chip.outerHTML = dumChip(r, cur);
+}, 20000);
+
+// ---------- Recibir una lista compartida (WhatsApp, portal, correo…) ----------
+
+function sharedText() {
+  const q = new URLSearchParams(location.search);
+  const text = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n').trim();
+  if (q.has('text') || q.has('title') || q.has('url')) history.replaceState(null, '', location.pathname);
+  return text.slice(0, 20000);
+}
+
 // ---------- Arranque ----------
 
 store.setSaveErrorHandler(() => toast('No queda espacio para guardar. Exporta tus clientes y borra rutas antiguas.', 8000));
 store.pruneOldRoutes();
 ui.date = defaultDate();
 render();
+const shared = sharedText();
+if (shared) {
+  // Lo compartido va a la hoja de "Pegar lista", ya leído, para revisarlo antes de añadir.
+  openSheet({ kind: 'paste', text: shared });
+  ui.sheet.parsed = parseList(shared);
+  ui.sheet.initial = '';
+  renderSheet();
+}
 store.requestPersist().then((p) => { ui.persisted = p; if (ui.tab === 'settings' && !ui.sheet) render(); });
 registerServiceWorker();

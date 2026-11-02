@@ -346,3 +346,5 @@ body.has-actionbar .toast { bottom: calc(170px + var(--safe-b)); }
 
 .engine.off .dot { background: var(--late); }
 .cand .doubt { display: block; color: var(--warn); font-size: 12.5px; margin-top: 3px; }
+
+.pill.spro { border-color: rgba(201, 165, 76, 0.55); color: var(--gold-2); }

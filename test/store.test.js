@@ -33,7 +33,7 @@ test('importar no machaca un cliente más reciente y conserva las visitas', () =
   store.rememberClient({ name: 'Vinos Paco', address: 'C/ Nueva 1', visits: 7 });
   store.importClients(JSON.stringify({ clients: { v: { name: 'Vinos Paco', address: 'C/ Vieja 9', visits: 2, updatedAt: 5 } } }));
   assert.equal(store.findClient('vinos paco').address, 'C/ Nueva 1');
-  assert.throws(() => store.importClients('x'.repeat(1_000_001)), /grande/);
+  assert.throws(() => store.importClients('x'.repeat(3_000_001)), /grande/);
   assert.throws(() => store.importClients('{"clients": []}'), /válido/);
 });
 
@@ -60,4 +60,33 @@ test('si no cabe, libera los tiempos guardados de otros días y avisa si aun as�
   assert.equal(store.save(), false);
   assert.equal(errors, 1);
   globalThis.localStorage.setItem = real;
+});
+
+test('aprende el tiempo de descarga: con 3 entregas usa la mediana', () => {
+  store.rememberClient({ name: 'Bar Lento', service: 10 });
+  store.learnService('Bar Lento', 22);
+  store.learnService('Bar Lento', 18.4);
+  assert.equal(store.findClient('bar lento').service, 10); // aún 2 datos
+  store.learnService('Bar Lento', 95); // fuera de rango: se ignora
+  store.learnService('Bar Lento', 25);
+  const c = store.findClient('bar lento');
+  assert.deepEqual(c.serviceLog, [22, 18, 25]);
+  assert.equal(c.service, 22);
+  assert.equal(c.serviceLearned, true);
+});
+
+test('copia de seguridad: sin claves, y al restaurar recupera clientes y días que faltan', () => {
+  store.setSettings({ tomtomKey: 'secreto', orsKey: 'secreto2' });
+  store.rememberClient({ name: 'Celler Copia', address: 'C/ Major 1', windows: [[540, 600]] });
+  const r = store.route('2099-12-24');
+  r.stops.push({ id: 'x1', name: 'Celler Copia', address: 'C/ Major 1', lat: 41.3, lon: 2.1, windows: [[540, 600]], service: 10, done: true, doneAt: 5 });
+  const json = store.exportBackup();
+  assert.ok(!json.includes('secreto'));
+  delete store.db().routes['2099-12-24'];
+  store.forgetClient('celler copia');
+  const res = store.importClients(json);
+  assert.equal(store.findClient('celler copia').address, 'C/ Major 1');
+  assert.ok(res.routes >= 1);
+  assert.equal(store.route('2099-12-24').status, 'done');
+  assert.equal(store.route('2099-12-24').stops[0].name, 'Celler Copia');
 });

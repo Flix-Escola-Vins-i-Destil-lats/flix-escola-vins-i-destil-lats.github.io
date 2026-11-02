@@ -3,7 +3,7 @@
 import { clientKey } from './parse.js';
 
 const KEY = 'ruta-escola-v1';
-const MAX_IMPORT_BYTES = 1_000_000;
+const MAX_IMPORT_BYTES = 3_000_000; // una copia completa con 3 semanas de rutas cabe de sobra
 
 export const DEFAULT_DEPOT = {
   name: 'Comercial Escolà · Sant Joan Despí',
@@ -126,6 +126,8 @@ export function sanitizeClient(c) {
     visits: int(c.visits, 0, 100000, 0),
     lastVisit: /^\d{4}-\d{2}-\d{2}$/.test(c.lastVisit) ? c.lastVisit : undefined,
     needsCheck: !!c.needsCheck,
+    serviceLog: Array.isArray(c.serviceLog) ? c.serviceLog.map((m) => int(m, 1, 120, 0)).filter(Boolean).slice(-8) : [],
+    serviceLearned: !!c.serviceLearned,
     updatedAt: Math.min(int(c.updatedAt, 0, Number.MAX_SAFE_INTEGER, 0), Date.now()),
   };
 }
@@ -150,6 +152,20 @@ export function rememberClient(data, { renamedFrom } = {}) {
   state.clients[key] = merged;
   save();
   return merged;
+}
+
+// Tiempo real de descarga en un cliente: con 3 o más entregas, la mediana pasa a ser su tiempo de descarga.
+export function learnService(name, minutes) {
+  const c = findClient(name);
+  if (!c || !(minutes >= 1 && minutes <= 90)) return null;
+  const log = [...(c.serviceLog || []), Math.round(minutes)].slice(-8);
+  const patch = { name: c.name, serviceLog: log };
+  if (log.length >= 3) {
+    const sorted = [...log].sort((a, b) => a - b);
+    patch.service = sorted[Math.floor(sorted.length / 2)];
+    patch.serviceLearned = true;
+  }
+  return rememberClient(patch);
 }
 
 export function forgetClient(key) {
@@ -198,6 +214,40 @@ export function exportClients() {
   return JSON.stringify({ app: 'ruta-escola', version: 1, exportedAt: new Date().toISOString(), clients: state.clients }, null, 2);
 }
 
+// Copia de seguridad completa: clientes, rutas y ajustes, sin las claves (son personales).
+export function exportBackup() {
+  const { tomtomKey, orsKey, ...rest } = state.settings;
+  const routes = Object.fromEntries(Object.entries(state.routes).map(([d, r]) => [d, { ...r, pairs: {} }]));
+  return JSON.stringify({ app: 'ruta-escola', kind: 'backup', version: 2, exportedAt: new Date().toISOString(), settings: rest, clients: state.clients, routes });
+}
+
+export function markBackup() {
+  setSettings({ lastBackupAt: Date.now() });
+}
+
+// Rutas de una copia: solo se añaden los días que no hay en este móvil, y solo con datos que cuadran.
+function importRoutes(routes) {
+  let n = 0;
+  if (!routes || typeof routes !== 'object') return 0;
+  for (const [date, r] of Object.entries(routes)) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || Object.hasOwn(state.routes, date) || !Array.isArray(r?.stops)) continue;
+    const stops = r.stops.slice(0, 200).map((x) => {
+      const c = sanitizeClient(x);
+      if (!c || typeof x.id !== 'string') return null;
+      return {
+        id: x.id.slice(0, 40), name: c.name, address: c.address, lat: c.lat, lon: c.lon, label: c.label, windows: c.windows,
+        service: c.service, phone: c.phone, notes: c.notes, needsCheck: c.needsCheck,
+        done: !!x.done, doneAt: x.done ? int(x.doneAt, 0, Number.MAX_SAFE_INTEGER, 0) : undefined,
+        failed: x.failed ? str(x.failed, 60) : undefined,
+      };
+    }).filter(Boolean);
+    const allDone = stops.length && stops.every((x) => x.done);
+    state.routes[date] = { date, stops, plan: null, status: allDone ? 'done' : 'draft', pairs: {}, history: [] };
+    n++;
+  }
+  return n;
+}
+
 export function importClients(json) {
   if (json.length > MAX_IMPORT_BYTES) throw new Error('Archivo demasiado grande');
   const data = JSON.parse(json);
@@ -215,6 +265,7 @@ export function importClients(json) {
       updated++;
     }
   }
+  const routes = data.kind === 'backup' ? importRoutes(data.routes) : 0;
   save();
-  return { added, updated };
+  return { added, updated, routes };
 }
