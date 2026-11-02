@@ -6,7 +6,7 @@ App web para el móvil (se instala como una app normal) que ordena la ruta de re
 
 1. **El día antes**: pega la lista del portal (o añade las paradas a mano) y pulsa **Optimizar ruta**.
 2. **10 minutos antes de salir**: pulsa **Voy a salir**. La app vuelve a calcular el orden con el tráfico del momento.
-3. **Abrir en Waze** te lleva a la primera parada. Al terminar cada entrega pulsa **Entregado · siguiente**: recalcula desde donde estás y te da la siguiente.
+3. **Abrir en Waze** te lleva a la primera parada. Al terminar cada parada pulsa **Siguiente** (la entrega se registra en la tablet; si te equivocas, **Deshacer**): recalcula desde donde estás y te da la siguiente.
 
 Cada cliente queda guardado con su dirección, su horario de entrega, sus notas y su teléfono. La próxima vez basta con escribir su nombre.
 

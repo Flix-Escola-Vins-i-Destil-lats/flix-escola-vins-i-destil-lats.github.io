@@ -3,7 +3,7 @@ import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, traffic
 import { computePlan } from './planner.js';
 import * as store from './store.js';
 
-export const VERSION = '1.4.0';
+export const VERSION = '1.4.1';
 
 // ---------- Utilidades ----------
 
@@ -31,10 +31,7 @@ const I = {
   x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   phone: '<svg viewBox="0 0 24 24"><path d="M6.5 3.5h3l1.5 4-2 1.5a11 11 0 0 0 6 6l1.5-2 4 1.5v3a2 2 0 0 1-2 2A16 16 0 0 1 4.5 5.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
-  ban: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m6 6 12 12" stroke="currentColor" stroke-width="1.8"/></svg>',
 };
-
-const FAIL_REASONS = ['Cerrado', 'No había nadie', 'No aceptan el pedido', 'Otro motivo'];
 
 // Àrea DUM (carga y descarga): hay que validar cada parada en la app SPRO; máximo 30 minutos.
 const DUM_MINUTES = 30;
@@ -203,7 +200,7 @@ function firstSteps() {
            <button class="btn ghost" data-action="tab" data-tab="settings">Ir a Ajustes</button>
          </div>`)}
       ${step(false, 2, 'Practica una ruta',
-        `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Voy a salir», Waze, SPRO y «Entregado». Se borra con un toque.</div>
+        `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Voy a salir», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
          <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
       ${step(false, 3, 'Pega tu ruta de verdad',
         `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
@@ -229,7 +226,7 @@ function loadDemo() {
   r.stops = DEMO.map(([name, address, lat, lon, from, to], i) => ({
     id: `demo${i}`, demo: true, name, address, label: address, lat, lon, service: 10, done: false,
     windows: from == null ? [] : [[Math.min(base + from, 23 * 60), Math.min(base + to, 23 * 60 + 59)]],
-    notes: i === 1 ? 'Parada de práctica: prueba aquí el botón SPRO y «No entregado».' : '',
+    notes: i === 1 ? 'Parada de práctica: prueba aquí el botón SPRO y «Dejar para luego».' : '',
   }));
   r.status = 'draft'; r.plan = null; r.current = null;
   store.save();
@@ -352,7 +349,6 @@ function renderActive(r) {
       <div class="minor">
         <a class="pill spro" href="${esc(sproUrl())}" data-action="spro" data-keep-default="1">${I.pin}SPRO · ${r.dum?.id === cur.id ? 'otra vez' : 'aparcar'}</a>
         ${cur.phone ? `<a class="pill" href="tel:${esc(cur.phone.replace(/[^\d+]/g, ''))}">${I.phone}Llamar</a>` : ''}
-        <button class="pill" data-action="open-fail">${I.ban}No entregado</button>
         ${pendingCount > 1 ? '<button class="pill" data-action="postpone">Dejar para luego</button>' : ''}
         <button class="pill" data-action="edit-stop" data-id="${esc(cur.id)}">Editar</button>
       </div>
@@ -371,20 +367,22 @@ function renderActive(r) {
 function finishedList(r) {
   const done = r.stops.filter((x) => x.done).sort((a, b) => a.doneAt - b.doneAt);
   if (!done.length) return '';
-  return `<h2 class="section-title">Hechas</h2><ol class="stops">${done.map((x, i) => stopCard(x, i + 1, null, `<b>${fmt(minOfDay(x.doneAt))}</b><span>${x.failed ? 'intento' : 'entregado'}</span>`)).join('')}</ol>
+  return `<h2 class="section-title">Hechas</h2><ol class="stops">${done.map((x, i) => stopCard(x, i + 1, null, `<b>${fmt(minOfDay(x.doneAt))}</b><span>${x.failed ? 'intento' : 'hecha'}</span>`)).join('')}</ol>
     <div style="text-align:center;margin-top:12px"><button class="linkbtn" data-action="undo">Deshacer la última</button></div>`;
 }
 
 // Los dos botones del día a día, siempre a mano del pulgar mientras estás en ruta.
+// La entrega se registra en la tablet de reparto: aquí solo se pasa a la siguiente parada.
 function renderActionBar() {
   const r = currentRoute();
   if (r.status !== 'active') return '';
   const cur = r.stops.find((x) => x.id === r.current && !x.done);
   if (!cur) return '';
   const s = settings();
+  const last = r.stops.filter((x) => !x.done).length === 1;
   return `<a class="btn gold big" href="${esc(navUrl(s.nav, cur))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>
     ${ui.busy ? `<button class="btn forest big" disabled><span class="spin"></span>${esc(ui.busy)}</button>`
-      : `<button class="btn forest big" data-action="next">${I.check}Entregado</button>`}`;
+      : `<button class="btn forest big" data-action="next">${last ? `${I.check}Terminar` : `${I.right}Siguiente`}</button>`}`;
 }
 
 function backupAge() {
@@ -407,7 +405,7 @@ function renderDone(r) {
   const first = done[0], last = done[done.length - 1];
   return `${dayBar()}<div class="card finish">
       <div class="serif">Ruta terminada</div>
-      <div class="muted" style="margin:6px 0 18px">${plural(delivered, 'entrega', 'entregas')}${done.length > delivered ? ` · ${done.length - delivered} sin entregar` : ''} · de ${first ? fmt(minOfDay(r.startedAt || first.doneAt)) : '--'} a ${last ? fmt(minOfDay(last.doneAt)) : '--'}</div>
+      <div class="muted" style="margin:6px 0 18px">${plural(delivered, 'parada', 'paradas')}${done.length > delivered ? ` · ${done.length - delivered} sin entregar` : ''} · de ${first ? fmt(minOfDay(r.startedAt || first.doneAt)) : '--'} a ${last ? fmt(minOfDay(last.doneAt)) : '--'}</div>
       <a class="btn gold big block" href="${esc(navUrl(s.nav, s.depot))}" target="_blank" rel="noopener">${I.nav}Volver al almacén</a>
       <div style="height:10px"></div>
       <button class="btn ghost block" data-action="goto-tomorrow">Preparar la ruta de mañana</button>
@@ -569,7 +567,6 @@ function renderSheet() {
   if (sh.kind === 'stop') body = sheetStop(sh);
   else if (sh.kind === 'paste') body = sheetPaste(sh);
   else if (sh.kind === 'depot') body = sheetDepot(sh);
-  else if (sh.kind === 'fail') body = sheetFail(sh);
   wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1"><div class="grab" aria-hidden="true"></div>${body}</div>`;
   $('.sheet', wrap).scrollTop = scroll;
 }
@@ -672,19 +669,6 @@ function sheetDepot(sh) {
     <div class="foot">
       <button class="btn gold big block" data-action="save-depot" ${located(sh.draft) ? '' : 'disabled'}>Guardar</button>
       <button class="btn ghost block" data-action="reset-depot">Volver a Comercial Escolà</button>
-      <button class="btn ghost block" data-action="close">Cancelar</button>
-    </div>`;
-}
-
-function sheetFail(sh) {
-  const r = currentRoute();
-  const cur = r.stops.find((x) => x.id === sh.id);
-  const more = r.stops.filter((x) => !x.done).length > 1;
-  return `<h2 id="sheet-title">No entregado</h2>
-    <div class="small muted" style="margin:-6px 0 14px">${esc(cur?.name || '')}: ¿qué ha pasado?</div>
-    <div class="reasons">${FAIL_REASONS.map((t) => `<button class="btn ghost block" data-action="fail-reason" data-r="${esc(t)}">${esc(t)}</button>`).join('')}</div>
-    <div class="foot">
-      ${more ? '<button class="btn line block" data-action="postpone">Volver más tarde (dejar para luego)</button>' : ''}
       <button class="btn ghost block" data-action="close">Cancelar</button>
     </div>`;
 }
@@ -978,18 +962,16 @@ function learnFrom(cur) {
   store.learnService(cur.name, minutes);
 }
 
-// Marca la parada actual como hecha (entregada o no) y pasa a la siguiente, con opción de deshacer.
-async function finishCurrent({ failed = null } = {}) {
+// Marca la parada actual como hecha y pasa a la siguiente, con opción de deshacer.
+async function finishCurrent() {
   const r = currentRoute();
   const cur = r.stops.find((x) => x.id === r.current && !x.done);
   if (!cur) return;
   cur.done = true; cur.doneAt = Date.now();
-  if (failed) cur.failed = failed; else delete cur.failed;
-  if (!failed) {
-    const mem = store.findClient(cur.name);
-    if (mem) store.rememberClient({ name: mem.name, visits: (mem.visits || 0) + 1, lastVisit: ui.date });
-    learnFrom(cur);
-  }
+  delete cur.failed;
+  const mem = store.findClient(cur.name);
+  if (mem) store.rememberClient({ name: mem.name, visits: (mem.visits || 0) + 1, lastVisit: ui.date });
+  learnFrom(cur);
   delete cur.trip;
   if (r.dum?.id === cur.id) r.dum = null;
   r.postponed = (r.postponed || []).filter((id) => id !== cur.id);
@@ -997,7 +979,7 @@ async function finishCurrent({ failed = null } = {}) {
   await replanActive(null);
   const r2 = currentRoute();
   const next = r2.stops.find((x) => x.id === r2.current);
-  const what = failed ? `${cur.name}: no entregado` : `${cur.name} entregado`;
+  const what = `Hecha: ${cur.name}`;
   toast(next && r2.status === 'active' ? `${what} · siguiente: ${next.name}` : what, 6000, { label: 'Deshacer', fn: () => undoLast() });
 }
 
@@ -1020,7 +1002,7 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'open-fail', 'fail-reason', 'remove-stop', 'day', 'demo', 'clear-demo']);
+const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
@@ -1030,8 +1012,6 @@ const actions = {
   optimize: () => optimize(),
   leave: () => leave(),
   next: () => finishCurrent(),
-  'open-fail': () => { const r = currentRoute(); if (r.current) openSheet({ kind: 'fail', id: r.current }); },
-  'fail-reason': (el) => { closeSheet(); finishCurrent({ failed: el.dataset.r }); },
   postpone: () => {
     const r = currentRoute();
     if (ui.sheet) closeSheet();
