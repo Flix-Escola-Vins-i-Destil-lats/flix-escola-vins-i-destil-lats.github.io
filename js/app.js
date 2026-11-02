@@ -3,7 +3,7 @@ import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, traffic
 import { computePlan } from './planner.js';
 import * as store from './store.js';
 
-export const VERSION = '1.2.0';
+export const VERSION = '1.2.1';
 
 // ---------- Utilidades ----------
 
@@ -364,7 +364,12 @@ function renderSettings() {
       <button class="btn line" data-action="test-key">Probar</button></span>
     </label>
     <div class="key-help">${s.tomtomKey ? 'Activo: la ruta se corrige con el tráfico previsto al planificar y con el de ese momento al salir y en cada parada.' : 'Sin ella el tráfico se estima por franja horaria: no ve accidentes ni cortes.'}
-      Gratis en <a href="https://developer.tomtom.com/" target="_blank" rel="noopener">TomTom para desarrolladores</a> (20.000 rutas al mes; la app gasta unas 40 al día).</div>
+      Gratis y sin tarjeta (20.000 rutas al mes; la app gasta unas 40 al día):
+      <ol><li><a href="https://developer.tomtom.com/user/login" target="_blank" rel="noopener">Crea tu cuenta o inicia sesión en TomTom</a>.
+        Pulsa el botón rojo <b>Register / sign in</b>; si te pregunta cómo vas a usarlo, elige <b>Build with APIs</b>.</li>
+      <li><a href="https://my.tomtom.com/keys" target="_blank" rel="noopener">Abre tus claves</a> y copia la que ya viene creada
+        (<b>My first API key</b>). Si no hay ninguna, pulsa <b>Create Key</b>.</li>
+      <li>Pégala arriba y pulsa <b>Probar</b>.</li></ol></div>
   </div>
 
   <h2 class="section-title">Jornada</h2>
