@@ -348,3 +348,10 @@ body.has-actionbar .toast { bottom: calc(170px + var(--safe-b)); }
 .cand .doubt { display: block; color: var(--warn); font-size: 12.5px; margin-top: 3px; }
 
 .pill.spro { border-color: rgba(201, 165, 76, 0.55); color: var(--gold-2); }
+
+/* Pregunta de sí/no propia (sustituye al confirm del navegador) */
+.ask-wrap { position: fixed; inset: 0; z-index: 40; background: rgba(0, 0, 0, 0.65); display: flex; align-items: center; justify-content: center; padding: 24px 16px; }
+.ask { width: 100%; max-width: 420px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 20px; padding: 20px 18px 16px; }
+.ask p { margin: 0 0 18px; font-size: 16.5px; line-height: 1.45; }
+.ask .btn { min-height: 50px; }
+.ask .btn.danger { background: var(--late); color: var(--gold-ink); border-color: transparent; }

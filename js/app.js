@@ -3,7 +3,7 @@ import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, traffic
 import { computePlan } from './planner.js';
 import * as store from './store.js';
 
-export const VERSION = '1.3.0';
+export const VERSION = '1.3.1';
 
 // ---------- Utilidades ----------
 
@@ -461,14 +461,37 @@ function closeSheet() {
   renderSheet();
 }
 
+// Pregunta de sí/no con el diseño de la app. El confirm() del navegador a veces no llega a mostrarse
+// dentro de la app instalada (Chrome/Edge lo bloquean), y además sale con el dominio como título.
+function ask(text, { ok = 'Aceptar', danger = false } = {}) {
+  return new Promise((resolve) => {
+    const box = $('#ask');
+    const prevFocus = document.activeElement;
+    box.innerHTML = `<div class="ask" role="alertdialog" aria-modal="true" aria-labelledby="ask-text">
+      <p id="ask-text">${esc(text)}</p>
+      <div class="actions2" style="margin:0">
+        <button class="btn ghost" data-ask="0">Cancelar</button>
+        <button class="btn ${danger ? 'danger' : 'gold'}" data-ask="1">${esc(ok)}</button>
+      </div></div>`;
+    box.hidden = false;
+    $('[data-ask="1"]', box).focus();
+    const done = (v) => { box.hidden = true; box.innerHTML = ''; box.onclick = null; prevFocus?.focus?.(); resolve(v); };
+    box.onclick = (e) => {
+      const b = e.target.closest('[data-ask]');
+      if (b) done(b.dataset.ask === '1');
+      else if (e.target === box) done(false);
+    };
+  });
+}
+
 // Cerrar sin querer (tocar fuera, otra pestaña) no debe tirar lo que estabas escribiendo.
-function requestCloseSheet() {
+async function requestCloseSheet() {
   const sh = ui.sheet;
   if (!sh) return true;
   if (sh.busy) return false;
   syncDraft();
-  if (snapshot(sh) !== sh.initial && !confirm('¿Salir sin guardar los cambios?')) return false;
-  closeSheet();
+  if (snapshot(sh) !== sh.initial && !(await ask('¿Salir sin guardar los cambios?', { ok: 'Salir' }))) return false;
+  if (ui.sheet === sh) closeSheet();
   return true;
 }
 
@@ -933,7 +956,7 @@ function undoLast() {
 const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'open-fail', 'fail-reason', 'remove-stop', 'day']);
 
 const actions = {
-  tab: (el) => { if (!requestCloseSheet()) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
+  tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
   day: (el) => { ui.date = addDays(ui.date, +el.dataset.d); render(); },
   'goto-tomorrow': () => { ui.date = addDays(todayIso(), 1); render(); },
   'leave-in': (el) => { store.setSettings({ leaveIn: +el.dataset.m }); render(); },
@@ -950,8 +973,8 @@ const actions = {
     replanActive('Dejada para el final');
   },
   undo: () => undoLast(),
-  'stop-route': () => {
-    if (!confirm('¿Volver a planificar? Las paradas hechas se mantienen marcadas.')) return;
+  'stop-route': async () => {
+    if (!(await ask('¿Volver a planificar? Las paradas hechas se mantienen marcadas.', { ok: 'Volver a planificar' }))) return;
     const r = currentRoute();
     r.status = 'draft'; r.current = null; r.plan = null; r.lastChange = null;
     store.save(); render();
@@ -988,11 +1011,11 @@ const actions = {
   },
   'del-window': (el) => { syncDraft(); ui.sheet.draft.windows.splice(+el.dataset.i, 1); renderSheet(); },
   'save-stop': () => saveStop(),
-  'remove-stop': () => {
+  'remove-stop': async () => {
     const r = currentRoute();
     const id = ui.sheet.id;
     const s = r.stops.find((x) => x.id === id);
-    if (!confirm(`¿Quitar ${s?.name || 'esta parada'} de la ruta?`)) return;
+    if (!(await ask(`¿Quitar ${s?.name || 'esta parada'} de la ruta?`, { ok: 'Quitar', danger: true }))) return;
     const idx = r.stops.indexOf(s);
     r.stops = r.stops.filter((x) => x.id !== id);
     if (r.current === id) r.current = null;
@@ -1001,9 +1024,10 @@ const actions = {
     if (r.status === 'active') replanActive(null).then(() => toast('Parada quitada', 6000, { label: 'Deshacer', fn: restore }));
     else { render(); toast('Parada quitada', 6000, { label: 'Deshacer', fn: restore }); }
   },
-  'forget-client': () => {
-    if (!confirm('¿Olvidar este cliente? Se borra su dirección y horario guardados.')) return;
-    store.forgetClient(ui.sheet.key); closeSheet(); render();
+  'forget-client': async () => {
+    const key = ui.sheet.key;
+    if (!(await ask('¿Olvidar este cliente? Se borra su dirección y horario guardados.', { ok: 'Olvidar', danger: true }))) return;
+    store.forgetClient(key); closeSheet(); render();
   },
   'client-to-route': async () => {
     syncDraft();
@@ -1219,6 +1243,7 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !$('#ask').hidden) return; // la pregunta se cierra con sus botones
   if (e.key === 'Escape' && ui.sheet) requestCloseSheet();
   if (e.key === 'Enter' && e.target.id === 'f-address') { e.preventDefault(); searchAddress(); }
 });
