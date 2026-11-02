@@ -75,3 +75,14 @@ test('con TomTom: un atasco en un tramo cambia el orden y no se guarda en la cac
   assert.equal(p1.source, 'tomtom');
   assert.ok(Object.values(p1.pairs).every((x) => x.src === 'ors'));
 });
+
+test('si openrouteservice falla, calcula una ruta aproximada y avisa (no se queda sin ruta)', async () => {
+  const f = globalThis.fetch;
+  globalThis.fetch = async (url, opts) => (String(url).includes('openrouteservice') ? { ok: false, status: 403, json: async () => ({}) } : f(url, opts));
+  const p = await computePlan({ ...base, stops });
+  globalThis.fetch = f;
+  assert.equal(p.order.length, 2);
+  assert.equal(p.source, 'estimate');
+  assert.match(p.warning, /clave/);
+  assert.ok(Object.values(p.pairs).every((x) => x.src === 'estimate')); // no se reutilizarán como si fueran reales
+});

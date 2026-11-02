@@ -45,7 +45,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
       if (i === j) continue;
       const k = pairKey(keys[i], keys[j]);
       if (reusePairs) next[k] = pairs[k];
-      else next[k] = { m: mx.minutes[i + 1][j], km: mx.km[i + 1][j], at: now, src };
+      else next[k] = { m: mx.minutes[i + 1][j], km: mx.km[i + 1][j], at: now, src: mx.source };
     }
   }
 
@@ -111,6 +111,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     wait: best.wait,
     km,
     source: traffic ? 'tomtom' : mx.source,
+    warning: mx.warning,
     live: traffic && !!live,
     computedAt: now,
     startMin,

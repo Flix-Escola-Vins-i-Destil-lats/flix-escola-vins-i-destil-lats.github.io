@@ -90,3 +90,22 @@ test('copia de seguridad: sin claves, y al restaurar recupera clientes y días q
   assert.equal(store.route('2099-12-24').status, 'done');
   assert.equal(store.route('2099-12-24').stops[0].name, 'Celler Copia');
 });
+
+test('pasar configuración: lleva claves y almacén; al importar solo se aceptan valores válidos', () => {
+  store.setSettings({ orsKey: 'eyJvcnMiOiJjbGF2ZSJ9abc', tomtomKey: 'TomTomKey12345678', shiftStart: '07:00' });
+  const cfg = JSON.parse(store.exportConfig());
+  assert.equal(cfg.kind, 'config');
+  assert.equal(cfg.settings.orsKey, 'eyJvcnMiOiJjbGF2ZSJ9abc');
+  store.setSettings({ orsKey: '', tomtomKey: '', shiftStart: '07:30' });
+  const applied = store.applyConfig(cfg.settings);
+  assert.deepEqual(applied, ['clave de rutas', 'clave de tráfico', 'almacén', 'hora de inicio']);
+  assert.equal(store.settings().orsKey, 'eyJvcnMiOiJjbGF2ZSJ9abc');
+  assert.equal(store.settings().shiftStart, '07:00');
+  // Archivo manipulado: nada raro entra en los ajustes
+  const evil = store.applyConfig({ orsKey: '<script>alert(1)</script>', depot: { name: '<b>x</b>', lat: 'a', lon: 2 }, shiftStart: '99', nav: 'javascript:', service: 9999 });
+  assert.deepEqual(evil, []);
+  assert.equal(store.settings().orsKey, 'eyJvcnMiOiJjbGF2ZSJ9abc');
+  assert.equal(store.settings().shiftStart, '07:00');
+  assert.notEqual(store.settings().nav, 'javascript:');
+  assert.ok(store.settings().service <= 180);
+});

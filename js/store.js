@@ -210,6 +210,33 @@ export function isoDate(d = new Date()) {
 
 // ---------- Compartir memoria con compañeros ----------
 
+// Configuración para un compañero: claves, almacén, jornada y clientes. Lleva las claves: solo por privado.
+export function exportConfig() {
+  const { orsKey, tomtomKey, depot, shiftStart, service, returnToDepot, nav } = state.settings;
+  return JSON.stringify({
+    app: 'ruta-escola', kind: 'config', version: 3, exportedAt: new Date().toISOString(),
+    settings: { orsKey, tomtomKey, depot, shiftStart, service, returnToDepot, nav }, clients: state.clients,
+  });
+}
+
+// Solo valores con forma válida: un archivo manipulado no puede meter otra cosa en los ajustes.
+export function applyConfig(cfg) {
+  if (!cfg || typeof cfg !== 'object') return [];
+  const patch = {}, applied = [];
+  const key = (v) => (typeof v === 'string' && /^[A-Za-z0-9._=-]{8,500}$/.test(v.trim()) ? v.trim() : null);
+  if (key(cfg.orsKey)) { patch.orsKey = key(cfg.orsKey); applied.push('clave de rutas'); }
+  if (key(cfg.tomtomKey)) { patch.tomtomKey = key(cfg.tomtomKey); applied.push('clave de tráfico'); }
+  const d = cfg.depot;
+  const lat = num(d?.lat, -90, 90), lon = num(d?.lon, -180, 180);
+  if (lat !== null && lon !== null) { patch.depot = { name: str(d.name, 120) || 'Almacén', lat, lon }; applied.push('almacén'); }
+  if (typeof cfg.shiftStart === 'string' && /^\d{2}:\d{2}$/.test(cfg.shiftStart)) { patch.shiftStart = cfg.shiftStart; applied.push('hora de inicio'); }
+  if (cfg.service != null) patch.service = int(cfg.service, 1, 180, state.settings.service);
+  if (typeof cfg.returnToDepot === 'boolean') patch.returnToDepot = cfg.returnToDepot;
+  if (cfg.nav === 'waze' || cfg.nav === 'gmaps') patch.nav = cfg.nav;
+  setSettings(patch);
+  return applied;
+}
+
 export function exportClients() {
   return JSON.stringify({ app: 'ruta-escola', version: 1, exportedAt: new Date().toISOString(), clients: state.clients }, null, 2);
 }

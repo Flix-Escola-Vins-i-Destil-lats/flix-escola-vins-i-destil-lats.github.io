@@ -3,7 +3,7 @@ import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, traffic
 import { computePlan } from './planner.js';
 import * as store from './store.js';
 
-export const VERSION = '1.3.1';
+export const VERSION = '1.4.0';
 
 // ---------- Utilidades ----------
 
@@ -189,18 +189,79 @@ function stopCard(s, i, leg, extra = '') {
   </button></li>`;
 }
 
+// Lo que ve quien abre la app por primera vez: tres pasos, y cada uno se marca al hacerlo.
+function firstSteps() {
+  const s = settings();
+  const step = (done, n, title, body) => `<li class="${done ? 'ok' : ''}"><span class="n">${done ? I.check : n}</span><div class="grow"><b>${title}</b>${body}</div></li>`;
+  return `<div class="card first">
+    <div class="serif">Primeros pasos</div>
+    <ol class="steps">
+      ${step(!!s.orsKey, 1, 'Configura la app',
+        `<div class="small muted">Si un compañero te ha pasado su configuración, impórtala y listo. Si no, pon tu clave gratuita en Ajustes.</div>
+         <div class="actions2" style="margin:10px 0 0">
+           <label class="btn line" style="cursor:pointer">Importar archivo<input type="file" id="import-file" accept="application/json,.json" hidden></label>
+           <button class="btn ghost" data-action="tab" data-tab="settings">Ir a Ajustes</button>
+         </div>`)}
+      ${step(false, 2, 'Practica una ruta',
+        `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Voy a salir», Waze, SPRO y «Entregado». Se borra con un toque.</div>
+         <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
+      ${step(false, 3, 'Pega tu ruta de verdad',
+        `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
+    </ol>
+  </div>`;
+}
+
+// Ruta de práctica: direcciones reales del Baix Llobregat y Barcelona, horarios a partir de ahora.
+const DEMO = [
+  ['Ejemplo · Bar La Plaça', "Rambla de Just Oliveras 30, L'Hospitalet de Llobregat", 41.36142, 2.10137, 0, 120],
+  ['Ejemplo · Celler de Sants', 'Carrer de Sants 200, Barcelona', 41.37559, 2.13161, 60, 240],
+  ['Ejemplo · Vinoteca Castellbell', 'Rambla de la Marquesa de Castellbell 20, Sant Feliu de Llobregat', 41.3808, 2.05197, null],
+  ['Ejemplo · Restaurant Despí', 'Avinguda de Barcelona 45, Sant Joan Despí', 41.36855, 2.06432, null],
+  ['Ejemplo · Bodega Molins', 'Plaça de la Creu 3, Molins de Rei', 41.41078, 2.01929, 30, 180],
+  ['Ejemplo · Taverna Esplugues', 'Carrer de Laureà Miró 290, Esplugues de Llobregat', 41.37793, 2.08432, null],
+];
+
+function loadDemo() {
+  const t = todayIso();
+  const r = store.route(t);
+  if (r.stops.length) { ui.date = t; render(); return toast('Hoy ya tienes paradas: la ruta de ejemplo es para un día vacío'); }
+  const base = Math.ceil(nowMin() / 15) * 15;
+  r.stops = DEMO.map(([name, address, lat, lon, from, to], i) => ({
+    id: `demo${i}`, demo: true, name, address, label: address, lat, lon, service: 10, done: false,
+    windows: from == null ? [] : [[Math.min(base + from, 23 * 60), Math.min(base + to, 23 * 60 + 59)]],
+    notes: i === 1 ? 'Parada de práctica: prueba aquí el botón SPRO y «No entregado».' : '',
+  }));
+  r.status = 'draft'; r.plan = null; r.current = null;
+  store.save();
+  ui.date = t; ui.tab = 'route';
+  render();
+  optimize();
+}
+
+function clearDemo() {
+  const r = currentRoute();
+  r.stops = r.stops.filter((x) => !x.demo);
+  r.status = 'draft'; r.plan = null; r.current = null; r.lastChange = null; r.dum = null; r.pairs = {};
+  store.save(); render(); toast('Ruta de ejemplo borrada');
+}
+
+const demoBanner = (r) => (r.stops.some((x) => x.demo)
+  ? `<div class="notice gold compact">${I.info}<div class="grow">Ruta de ejemplo para practicar: no se guarda en tus clientes.</div><button class="btn line" data-action="clear-demo" style="min-height:40px;padding:0 12px">Borrar</button></div>`
+  : '');
+
 function renderPlanning(r) {
   const s = settings();
   const dirty = isDirty(r);
   const stops = orderedStops(r);
   const legs = !dirty && r.plan ? new Map(r.plan.legs.map((l) => [l.id, l])) : new Map();
-  let html = dayBar();
+  let html = dayBar() + demoBanner(r);
 
   if (!r.stops.length) {
-    html += `<div class="empty">
+    html += settings().orsKey && store.clientList().length ? `<div class="empty">
       <div class="serif">Sin paradas todavía</div>
       <div class="small">Pega la lista de repartos (del portal de Escolà o de un mensaje) o añade las paradas a mano. Las direcciones y horarios que ya conozca la app se rellenan solos.</div>
-    </div>`;
+      <button class="linkbtn" data-action="demo" style="margin-top:8px">Practicar con una ruta de ejemplo (hoy)</button>
+    </div>` : firstSteps();
   } else if (!dirty) {
     const p = r.plan;
     html += `<div class="card summary">
@@ -267,7 +328,7 @@ function renderActive(r) {
   const cur = r.stops.find((x) => x.id === r.current && !x.done);
   const legs = new Map((r.plan?.legs || []).map((l) => [l.id, l]));
   const pendingCount = r.stops.filter((x) => !x.done).length;
-  let html = enRouteBar(r);
+  let html = enRouteBar(r) + demoBanner(r);
 
   if (r.lastChange) {
     html += `<div class="notice compact ${r.lastChange.kind === 'changed' ? 'gold' : 'info'}">${r.lastChange.kind === 'changed' ? I.spark : I.check}<div class="grow">${esc(r.lastChange.text)}</div>
@@ -422,8 +483,10 @@ function renderSettings() {
   <div class="card">
     <div class="small muted" style="margin-bottom:12px"><b>Copia de seguridad:</b> guarda clientes, horarios y rutas (sin tus claves) en Drive o en un mensaje a ti mismo. ${backupAge()}</div>
     <button class="btn line block" data-action="backup">Hacer copia de seguridad</button>
-    <div class="small muted" style="margin:16px 0 12px"><b>Pasar clientes</b> a otro repartidor, o <b>importar</b> una copia o los clientes de un compañero: se suman a los tuyos sin borrar nada.</div>
-    <div class="actions2" style="margin:0">
+    <div class="small muted" style="margin:16px 0 12px"><b>Para un compañero nuevo:</b> «Pasar configuración» le deja la app lista (claves, almacén, horario y tus clientes). Lleva tus claves: mándalo solo por privado.
+      «Pasar clientes» manda solo direcciones y horarios. Al <b>importar</b> nada se borra: se suma a lo que ya hay.</div>
+    <button class="btn line block" data-action="export-config">Pasar configuración</button>
+    <div class="actions2" style="margin:10px 0 0">
       <button class="btn ghost" data-action="export">Pasar clientes</button>
       <label class="btn ghost" style="cursor:pointer">Importar<input type="file" id="import-file" accept="application/json,.json" hidden></label>
     </div>
@@ -754,7 +817,8 @@ async function saveStop() {
   const fields = stopFields(d);
   const renamedFrom = sh.mode === 'client' ? sh.key : undefined;
   if (JSON.parse(sh.initial).service !== d.service) Object.assign(fields, { serviceLog: [], serviceLearned: false });
-  store.rememberClient(fields, { renamedFrom });
+  const isDemo = sh.id && currentRoute().stops.find((x) => x.id === sh.id)?.demo;
+  if (!isDemo) store.rememberClient(fields, { renamedFrom });
 
   if (sh.mode !== 'client') {
     const r = currentRoute();
@@ -800,7 +864,7 @@ async function optimize() {
     r.pairs = plan.pairs; delete plan.pairs;
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
-    toast('Ruta optimizada');
+    toast(plan.warning ? `Ruta aproximada (${plan.warning}). Revisa la clave en Ajustes.` : 'Ruta optimizada', plan.warning ? 6000 : 2600);
   } catch (e) {
     toast(friendlyError(e), 4000);
   }
@@ -828,9 +892,11 @@ async function leave() {
     const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true, pairs: r.pairs || {}, maxAgeMin: 24 * 60, returnToDepot: s.returnToDepot });
     r.pairs = plan.pairs; delete plan.pairs;
     const changed = before && before.order.join() !== plan.order.join();
-    r.lastChange = changed
-      ? { kind: 'changed', text: `He cambiado el orden según el tráfico de ahora. Vuelta prevista a las ${fmt(plan.end)}.` }
-      : { kind: 'same', text: `Ruta confirmada: el orden se mantiene. Vuelta prevista a las ${fmt(plan.end)}.` };
+    r.lastChange = plan.warning
+      ? { kind: 'same', text: `Ruta aproximada: ${plan.warning}. Vuelta prevista a las ${fmt(plan.end)}.` }
+      : changed
+        ? { kind: 'changed', text: `He cambiado el orden según el tráfico de ahora. Vuelta prevista a las ${fmt(plan.end)}.` }
+        : { kind: 'same', text: `Ruta confirmada: el orden se mantiene. Vuelta prevista a las ${fmt(plan.end)}.` };
     r.plan = plan; r.planSig = signature(r);
     r.status = 'active'; r.current = plan.order[0]; r.startedAt = departAt.getTime(); r.postponed = [];
     markCurrent(r, plan.legs[0], departAt.getTime());
@@ -881,7 +947,8 @@ async function replanActive(msg) {
     markCurrent(r, plan.legs[0], Date.now());
     const next = r.stops.find((x) => x.id === r.current);
     const leg = plan.legs[0];
-    if (msg !== null) toast(msg || `Siguiente: ${next.name}${leg ? ` · llegada ${fmt(leg.arrive)}` : ''}`, 3200);
+    if (plan.warning) toast(`Siguiente: ${next.name} · ruta aproximada (${plan.warning})`, 5000);
+    else if (msg !== null) toast(msg || `Siguiente: ${next.name}${leg ? ` · llegada ${fmt(leg.arrive)}` : ''}`, 3200);
   } catch {
     // Sin red: siguiente del orden previsto.
     const order = (r.plan?.order || []).filter((id) => active.some((p) => p.id === id));
@@ -953,7 +1020,7 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'open-fail', 'fail-reason', 'remove-stop', 'day']);
+const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'open-fail', 'fail-reason', 'remove-stop', 'day', 'demo', 'clear-demo']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
@@ -1057,6 +1124,9 @@ const actions = {
   },
   'reset-depot': () => { store.setSettings({ depot: store.DEFAULT_DEPOT }); closeSheet(); render(); toast('Salida: Comercial Escolà'); },
   export: () => exportClients(),
+  'export-config': () => exportConfig(),
+  demo: () => loadDemo(),
+  'clear-demo': () => clearDemo(),
   backup: () => backup(),
   spro: () => {
     const r = currentRoute();
@@ -1150,6 +1220,12 @@ function exportClients() {
   shareFile(store.exportClients(), `clientes-ruta-${todayIso()}.json`, 'Clientes · Ruta Escolà');
 }
 
+async function exportConfig() {
+  if (!settings().orsKey && !settings().tomtomKey) return toast('Primero pon tus claves en Ajustes');
+  const ok = await ask('El archivo lleva tus claves de rutas y tráfico. Pásalo solo por privado a compañeros de Escolà, nunca en grupos ni redes.', { ok: 'Entendido, pasar' });
+  if (ok) shareFile(store.exportConfig(), `configuracion-ruta-${todayIso()}.json`, 'Configuración · Ruta Escolà');
+}
+
 async function backup() {
   const ok = await shareFile(store.exportBackup(), `copia-ruta-escola-${todayIso()}.json`, 'Copia de seguridad · Ruta Escolà');
   if (ok) { store.markBackup(); toast('Copia guardada ✓'); render(); }
@@ -1220,14 +1296,24 @@ document.addEventListener('change', (e) => {
   if (t.id === 'set-key') store.setSettings({ tomtomKey: t.value.trim() });
   if (t.id === 'set-ors') store.setSettings({ orsKey: t.value.trim() });
   if (t.id === 'import-file' && t.files[0]) {
-    t.files[0].text().then((txt) => {
-      try {
-        const { added, updated, routes } = store.importClients(txt);
-        toast(`${plural(added, 'cliente nuevo', 'clientes nuevos')} · ${updated} actualizados${routes ? ` · ${plural(routes, 'ruta recuperada', 'rutas recuperadas')}` : ''}`, 4000);
-        render();
-      }
-      catch (err) { toast(/grande/.test(err.message) ? 'El archivo es demasiado grande' : 'Ese archivo no es una exportación de la app'); }
+    t.files[0].text().then(async (txt) => {
       t.value = '';
+      try {
+        let applied = [];
+        const data = JSON.parse(txt);
+        if (data?.kind === 'config') {
+          const n = Object.keys(data.clients || {}).length;
+          const ok = await ask(`Configuración de un compañero: claves, almacén, horario y ${plural(n, 'cliente', 'clientes')}. ¿Aplicarla? No se borra nada tuyo.`, { ok: 'Aplicar' });
+          if (!ok) return;
+          applied = store.applyConfig(data.settings);
+        }
+        const { added, updated, routes } = store.importClients(txt);
+        toast([applied.length ? `Listo: ${applied.join(', ')}` : '', `${plural(added, 'cliente nuevo', 'clientes nuevos')} · ${updated} actualizados`,
+          routes ? plural(routes, 'ruta recuperada', 'rutas recuperadas') : ''].filter(Boolean).join(' · '), 5000);
+        render();
+      } catch (err) {
+        toast(/grande/.test(err.message) ? 'El archivo es demasiado grande' : 'Ese archivo no es de la app Ruta');
+      }
     });
   }
 });

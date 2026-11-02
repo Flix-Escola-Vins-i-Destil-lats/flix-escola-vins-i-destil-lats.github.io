@@ -181,7 +181,16 @@ export function estimate(a, b) {
 // Devuelve { minutes[o][d], km[o][d], source }.
 export async function travelMatrix(origins, destinations, { orsKey, departAt } = {}) {
   const depart = departAt instanceof Date ? departAt : new Date();
-  if (orsKey) return orsMatrix(origins, destinations, orsKey, depart);
+  if (orsKey) {
+    // Si el servicio de rutas falla (clave, cuota o cobertura), mejor una ruta aproximada que ninguna.
+    try { return await orsMatrix(origins, destinations, orsKey, depart); } catch (e) {
+      return { ...estimateMatrix(origins, destinations, depart), warning: e.name === 'TimeoutError' || e.name === 'TypeError' ? 'Sin conexión con el servicio de rutas' : e.message };
+    }
+  }
+  return estimateMatrix(origins, destinations, depart);
+}
+
+function estimateMatrix(origins, destinations, depart) {
   return {
     minutes: origins.map((a) => destinations.map((b) => (sameSpot(a, b) ? 0 : estimate(a, b) * trafficFactor(depart)))),
     km: origins.map((a) => destinations.map((b) => haversineKm(a, b) * 1.4)),
