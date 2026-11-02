@@ -4,6 +4,19 @@
 
 const BCN = { lat: 41.372, lon: 2.077 };
 
+// Con poca cobertura una petición puede quedarse colgada: mejor fallar rápido y seguir con lo que hay.
+function get(url, opts = {}, ms = 12000) {
+  return fetch(url, { ...opts, signal: AbortSignal.timeout(ms) });
+}
+
+// Las etiquetas de los buscadores traen comarca, provincia y país: sobran para ir a repartir.
+export function cleanLabel(label) {
+  return String(label || '')
+    .split(', ')
+    .filter((p) => !/^(catalunya|cataluña|españa|espanya|spain|barcelona \(provincia\)|bajo llobregat|baix llobregat|barcelonès|barcelones|área metropolitana de barcelona|àrea metropolitana de barcelona|\d{5})$/i.test(p.trim()))
+    .join(', ');
+}
+
 export function haversineKm(a, b) {
   const R = 6371, r = Math.PI / 180;
   const dLat = (b.lat - a.lat) * r, dLon = (b.lon - a.lon) * r;
@@ -26,7 +39,7 @@ async function politeNominatim(url) {
   const wait = lastNominatim + 1100 - Date.now(); // máx. 1 petición/s según su política de uso
   if (wait > 0) await new Promise((r) => setTimeout(r, wait));
   lastNominatim = Date.now();
-  const res = await fetch(url, { headers: { 'Accept-Language': 'es' } });
+  const res = await get(url, { headers: { 'Accept-Language': 'es' } });
   if (!res.ok) throw new Error(`Nominatim ${res.status}`);
   return res.json();
 }
@@ -40,14 +53,14 @@ export async function geocode(query, { key, near = BCN } = {}) {
   if (key) {
     const url = `https://api.tomtom.com/search/2/search/${encodeURIComponent(q)}.json?key=${encodeURIComponent(key)}` +
       `&countrySet=ES&language=es-ES&limit=5&lat=${near.lat}&lon=${near.lon}&radius=80000`;
-    const res = await fetch(url);
+    const res = await get(url);
     if (res.status === 403 || res.status === 401) throw new Error('La clave de TomTom no es válida');
     if (!res.ok) throw new Error(`TomTom ${res.status}`);
     const data = await res.json();
     return (data.results || []).map((r) => ({
       lat: r.position.lat,
       lon: r.position.lon,
-      label: [r.poi?.name, r.address?.freeformAddress].filter(Boolean).join(' · '),
+      label: cleanLabel([r.poi?.name, r.address?.freeformAddress].filter(Boolean).join(' · ')),
       source: 'tomtom',
     }));
   }
@@ -55,10 +68,10 @@ export async function geocode(query, { key, near = BCN } = {}) {
   const nom = await politeNominatim(
     `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=5&countrycodes=es&viewbox=1.55,41.75,2.6,41.1&q=${encodeURIComponent(q)}`,
   ).catch(() => []);
-  let out = nom.map((r) => ({ lat: +r.lat, lon: +r.lon, label: r.display_name.split(', ').slice(0, 4).join(', '), source: 'osm' }));
+  let out = nom.map((r) => ({ lat: +r.lat, lon: +r.lon, label: cleanLabel(r.display_name).split(', ').slice(0, 4).join(', '), source: 'osm' }));
   if (out.length === 0) {
-    const res = await fetch(`https://photon.komoot.io/api/?limit=5&lat=${near.lat}&lon=${near.lon}&q=${encodeURIComponent(q)}`);
-    if (res.ok) {
+    const res = await get(`https://photon.komoot.io/api/?limit=5&lat=${near.lat}&lon=${near.lon}&q=${encodeURIComponent(q)}`).catch(() => null);
+    if (res?.ok) {
       const data = await res.json();
       out = (data.features || []).filter((f) => f.properties.countrycode === 'ES').map((f) => {
         const p = f.properties;
@@ -98,11 +111,15 @@ export async function travelMatrix(origins, destinations, { key, departAt, live 
 }
 
 async function osrmMatrix(origins, destinations, depart) {
-  const pts = [...origins, ...destinations];
-  const coords = pts.map((p) => `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`).join(';');
-  const src = origins.map((_, i) => i).join(';');
-  const dst = destinations.map((_, i) => i + origins.length).join(';');
-  const res = await fetch(`https://router.project-osrm.org/table/v1/driving/${coords}?sources=${src}&destinations=${dst}&annotations=duration,distance`);
+  // Cada punto se manda una sola vez aunque sea origen y destino (el servidor admite 100 como máximo).
+  const pts = [], index = new Map();
+  const idx = (p) => {
+    const k = `${p.lon.toFixed(6)},${p.lat.toFixed(6)}`;
+    if (!index.has(k)) { index.set(k, pts.length); pts.push(k); }
+    return index.get(k);
+  };
+  const src = origins.map(idx), dst = destinations.map(idx);
+  const res = await get(`https://router.project-osrm.org/table/v1/driving/${pts.join(';')}?sources=${src.join(';')}&destinations=${dst.join(';')}&annotations=duration,distance`);
   if (!res.ok) throw new Error(`OSRM ${res.status}`);
   const data = await res.json();
   if (data.code !== 'Ok') throw new Error(`OSRM: ${data.message || data.code}`);
@@ -141,7 +158,7 @@ async function tomtomMatrix(origins, destinations, key, depart, live) {
     };
     let res;
     for (let attempt = 0; attempt < 3; attempt++) {
-      res = await fetch(`https://api.tomtom.com/routing/matrix/2?key=${encodeURIComponent(key)}`, {
+      res = await get(`https://api.tomtom.com/routing/matrix/2?key=${encodeURIComponent(key)}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
@@ -161,9 +178,19 @@ async function tomtomMatrix(origins, destinations, key, depart, live) {
     }
   };
 
-  // Dos peticiones a la vez para no chocar con el límite de frecuencia.
+  // Dos peticiones a la vez para no chocar con el límite de frecuencia. Si un trozo falla, sus celdas
+  // se estiman; solo se abandona si fallan todos (sin red) o la clave no vale.
   const queue = tiles.slice();
-  await Promise.all([0, 1].map(async () => { while (queue.length) await run(queue.shift()); }));
+  let ok = 0, lastError = null;
+  await Promise.all([0, 1].map(async () => {
+    while (queue.length) {
+      try { await run(queue.shift()); ok++; } catch (e) {
+        lastError = e;
+        if (/clave/.test(e.message)) { queue.length = 0; }
+      }
+    }
+  }));
+  if (!ok) throw lastError || new Error('TomTom sin respuesta');
 
   for (let i = 0; i < origins.length; i++) {
     for (let j = 0; j < destinations.length; j++) {
@@ -180,6 +207,7 @@ function sameSpot(a, b) {
 // ---------- Navegación ----------
 
 export function navUrl(app, p) {
+  p = { lat: Number(p.lat), lon: Number(p.lon) };
   if (app === 'gmaps') return `https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lon}&travelmode=driving`;
   return `https://waze.com/ul?ll=${p.lat},${p.lon}&navigate=yes`;
 }

@@ -42,22 +42,100 @@ export function serviceStart(arrive, windows) {
   return { begin: arrive, lateBy: arrive - lastClose };
 }
 
-function* permutations(arr) {
-  if (arr.length <= 1) { yield arr.slice(); return; }
-  for (let i = 0; i < arr.length; i++) {
-    const rest = arr.slice(0, i).concat(arr.slice(i + 1));
-    for (const p of permutations(rest)) { p.unshift(arr[i]); yield p; }
+// ---- Evaluador interno rápido: solo coste, sin objetos ----
+// Mismas operaciones y en el mismo orden que evaluate(), así que da exactamente el mismo número.
+
+// Datos en arrays planos: matriz en Float64Array y ventanas ordenadas una sola vez.
+function prepare(ctx) {
+  const { matrix, stops, start } = ctx;
+  const n = stops.length, N = n + 1;
+  const M = new Float64Array(N * N);
+  for (let i = 0; i < N; i++) for (let j = 0; j < N; j++) M[i * N + j] = matrix[i][j];
+  const sorted = stops.map((s) => (s.windows?.length ? [...s.windows].sort((a, b) => a[0] - b[0]) : []));
+  const wOpen = new Float64Array(sorted.reduce((s, w) => s + w.length, 0)), wClose = new Float64Array(wOpen.length);
+  const wo = new Int32Array(N + 1), svc = new Float64Array(N), back = new Float64Array(N);
+  let q = 0;
+  for (let i = 1; i < N; i++) {
+    wo[i] = q;
+    for (const [o, c] of sorted[i - 1]) { wOpen[q] = o; wClose[q++] = c; }
+    svc[i] = stops[i - 1].service ?? 0;
   }
+  wo[N] = q;
+  const ret = ctx.returnTo !== false;
+  for (let i = 0; i < N; i++) back[i] = ret ? (ctx.back ? ctx.back[i] : matrix[i][0]) : 0;
+  // con tiempos no negativos el coste parcial es cota inferior del final y se puede podar
+  const nonneg = M.every((v) => v >= 0) && svc.every((v) => v >= 0) && back.every((v) => v >= 0);
+  return { n, N, M, wo, wOpen, wClose, svc, back, start, nonneg };
 }
 
-export function bruteForce(ctx) {
-  const ids = ctx.stops.map((_, i) => i + 1);
-  let best = null;
-  for (const p of permutations(ids)) {
-    const e = evaluate(p, ctx);
-    if (!best || e.cost < best.cost) best = { order: p, ...e };
+// Estado de ruta por posición k: hora al acabar la parada k-1 (T[0] = salida) y acumulados de retraso, espera y conducción.
+const makeState = (n) => ({ T: new Float64Array(n + 1), L: new Float64Array(n + 1), W: new Float64Array(n + 1), D: new Float64Array(n + 1) });
+
+// Coste de o[] reaprovechando el estado S hasta la posición a; escribe el resto en X (puede ser el mismo S).
+// Si el coste parcial ya supera limit devuelve Infinity sin acabar (solo válido con tiempos no negativos).
+function tail(P, o, a, S, X, limit) {
+  const { n, N, M, wo, wOpen, wClose, svc, back, start } = P;
+  let t = S.T[a], late = S.L[a], wait = S.W[a], drive = S.D[a], prev = a ? o[a - 1] : 0;
+  for (let k = a; k < n; k++) {
+    const i = o[k], d = M[prev * N + i], arrive = t + d;
+    drive += d;
+    let begin = arrive;
+    const w1 = wo[i + 1];
+    let q = wo[i];
+    if (w1 > q) {
+      while (q < w1 && arrive > wClose[q]) q++;
+      if (q < w1) { if (wOpen[q] > arrive) begin = wOpen[q]; }
+      else late += arrive - wClose[w1 - 1];
+    }
+    wait += begin - arrive;
+    t = begin + svc[i];
+    prev = i;
+    X.T[k + 1] = t; X.L[k + 1] = late; X.W[k + 1] = wait; X.D[k + 1] = drive;
+    if (late * LATE_PENALTY + (t - start) + 0.25 * drive + 0.1 * wait > limit) return Infinity;
   }
-  return best;
+  const b = n ? back[prev] : 0;
+  return late * LATE_PENALTY + (t + b - start) + 0.25 * (drive + b) + 0.1 * wait;
+}
+
+function fullCost(P, o, S) { S.T[0] = P.start; S.L[0] = S.W[0] = S.D[0] = 0; return tail(P, o, 0, S, S, Infinity); }
+
+// Búsqueda exhaustiva en orden lexicográfico (el mismo que el generador de permutaciones de antes),
+// con estado incremental por prefijo y poda por cota: mismo resultado, mucho más rápida.
+export function bruteForce(ctx) {
+  const P = prepare(ctx), n = P.n, N = P.N;
+  if (n === 0) return { order: [], ...evaluate([], ctx) };
+  const S = makeState(n), o = new Int32Array(n), used = new Uint8Array(N + 1);
+  S.T[0] = P.start;
+  let best = null, bestC = Infinity;
+  const { M, wo, wOpen, wClose, svc, back, start, nonneg } = P;
+  const dfs = (k) => {
+    const prev = k ? o[k - 1] : 0;
+    for (let i = 1; i <= n; i++) {
+      if (used[i]) continue;
+      // un paso de tail() a mano para no recorrer el prefijo otra vez
+      const d = M[prev * N + i], arrive = S.T[k] + d;
+      let begin = arrive, late = S.L[k];
+      const w1 = wo[i + 1];
+      let q = wo[i];
+      if (w1 > q) {
+        while (q < w1 && arrive > wClose[q]) q++;
+        if (q < w1) { if (wOpen[q] > arrive) begin = wOpen[q]; }
+        else late += arrive - wClose[w1 - 1];
+      }
+      const t = begin + svc[i], wait = S.W[k] + (begin - arrive), drive = S.D[k] + d;
+      if (nonneg && late * LATE_PENALTY + (t - start) + 0.25 * drive + 0.1 * wait >= bestC) continue;
+      o[k] = i;
+      if (k === n - 1) {
+        const b = back[i], c = late * LATE_PENALTY + (t + b - start) + 0.25 * (drive + b) + 0.1 * wait;
+        if (c < bestC) { bestC = c; best = Array.from(o); }
+        continue;
+      }
+      S.T[k + 1] = t; S.L[k + 1] = late; S.W[k + 1] = wait; S.D[k + 1] = drive;
+      used[i] = 1; dfs(k + 1); used[i] = 0;
+    }
+  };
+  dfs(0);
+  return { order: best, ...evaluate(best, ctx) };
 }
 
 // Generador pseudoaleatorio reproducible (mulberry32) para que dos ejecuciones den la misma ruta.
@@ -99,54 +177,92 @@ function greedy(ctx) {
   return order;
 }
 
-function neighbour(order, rand) {
-  const n = order.length;
-  const o = order.slice();
-  const i = Math.floor(rand() * n);
-  let j = Math.floor(rand() * (n - 1));
-  if (j >= i) j++;
-  const move = rand();
-  if (move < 0.4) {
-    // mover una parada a otra posición
-    const [x] = o.splice(i, 1);
-    o.splice(j, 0, x);
-  } else if (move < 0.7) {
-    [o[i], o[j]] = [o[j], o[i]];
-  } else {
-    // invertir un tramo (2-opt)
-    const a = Math.min(i, j), b = Math.max(i, j);
-    for (let l = a, r = b; l < r; l++, r--) [o[l], o[r]] = [o[r], o[l]];
+// Movimientos sobre el array, en el sitio (para deshacer: relocate(j, i), swap igual, reverse igual).
+function relocate(o, i, j) {
+  const x = o[i];
+  if (i < j) for (let k = i; k < j; k++) o[k] = o[k + 1];
+  else for (let k = i; k > j; k--) o[k] = o[k - 1];
+  o[j] = x;
+}
+function reverse(o, a, b) { for (; a < b; a++, b--) { const x = o[a]; o[a] = o[b]; o[b] = x; } }
+
+// Recocido simulado desde init. Solo se reevalúa desde la primera posición que cambia,
+// y el umbral de aceptación se sortea antes para cortar la evaluación en cuanto se pasa.
+function anneal(P, init, rand, iters, S, X) {
+  const n = P.n, cur = Int32Array.from(init);
+  let curC = fullCost(P, cur, S);
+  const best = cur.slice();
+  let bestC = curC;
+  let temp = 30;
+  const cool = Math.pow(0.05 / temp, 1 / iters);
+  const prune = P.nonneg;
+  for (let k = 0; k < iters; k++, temp *= cool) {
+    const i = Math.floor(rand() * n);
+    let j = Math.floor(rand() * (n - 1));
+    if (j >= i) j++;
+    const move = rand();
+    const a = i < j ? i : j, b = i < j ? j : i;
+    if (move < 0.4) relocate(cur, i, j); // mover una parada a otra posición
+    else if (move < 0.7) { const x = cur[i]; cur[i] = cur[j]; cur[j] = x; }
+    else reverse(cur, a, b); // invertir un tramo (2-opt)
+    // acepta si delta < -temp·ln(u): lo mismo que u < exp(-delta/temp)
+    const limit = curC - temp * Math.log(rand());
+    const c = tail(P, cur, a, S, X, prune ? limit : Infinity);
+    if (c <= limit) {
+      for (let q = a + 1; q <= n; q++) { S.T[q] = X.T[q]; S.L[q] = X.L[q]; S.W[q] = X.W[q]; S.D[q] = X.D[q]; }
+      curC = c;
+      if (c < bestC) { bestC = c; best.set(cur); }
+    } else if (move < 0.4) relocate(cur, j, i);
+    else if (move < 0.7) { const x = cur[i]; cur[i] = cur[j]; cur[j] = x; }
+    else reverse(cur, a, b);
   }
-  return o;
+  return { order: best, cost: bestC };
 }
 
-// Recocido simulado con varios arranques. Para pocas paradas, búsqueda exhaustiva.
-export function optimize(ctx, opts = {}) {
-  const n = ctx.stops.length;
-  if (n === 0) return { order: [], ...evaluate([], ctx) };
-  if (n <= 8) return bruteForce(ctx);
-  const rand = rng(opts.seed ?? 12345);
-  const restarts = opts.restarts ?? 6;
-  const iters = opts.iterations ?? Math.min(60000, 1500 * n);
-  let best = null;
-  for (let r = 0; r < restarts; r++) {
-    let cur = r === 0 ? greedy(ctx) : shuffle(greedy(ctx), rand, Math.ceil(n / 3));
-    let curE = evaluate(cur, ctx);
-    if (!best || curE.cost < best.cost) best = { order: cur, ...curE };
-    let temp = 30;
-    const cool = Math.pow(0.05 / temp, 1 / iters);
-    for (let k = 0; k < iters; k++) {
-      const cand = neighbour(cur, rand);
-      const e = evaluate(cand, ctx);
-      const delta = e.cost - curE.cost;
-      if (delta <= 0 || rand() < Math.exp(-delta / temp)) {
-        cur = cand; curE = e;
-        if (e.cost < best.cost) best = { order: cand, ...e };
+// Búsqueda local hasta óptimo local: Or-opt (tramos de 1 a 3, también al revés), intercambio y 2-opt.
+// Primera mejora; se repite mientras algo mejore.
+function polish(P, order, S, X) {
+  const n = P.n, cur = Int32Array.from(order), C = new Int32Array(n);
+  let curC = fullCost(P, cur, S);
+  const limitOf = () => (P.nonneg ? curC - 1e-9 : Infinity);
+  const tryC = (a) => {
+    const c = tail(P, C, a, S, X, limitOf());
+    if (!(c < curC - 1e-9)) return false;
+    cur.set(C); curC = c;
+    for (let q = a + 1; q <= n; q++) { S.T[q] = X.T[q]; S.L[q] = X.L[q]; S.W[q] = X.W[q]; S.D[q] = X.D[q]; }
+    return true;
+  };
+  let improved = true;
+  while (improved) {
+    improved = false;
+    for (let len = 1; len <= 3; len++) {
+      for (let i = 0; i + len <= n; i++) {
+        for (const rev of len > 1 ? [false, true] : [false]) {
+          // quitar cur[i..i+len) e insertarlo en la posición j del resto
+          for (let j = 0; j <= n - len; j++) {
+            if (j === i && !rev) continue;
+            let p = 0;
+            for (let q = 0; q < n; q++) {
+              if (q === i) q += len;
+              if (p === j) { for (let r = 0; r < len; r++) C[p++] = cur[rev ? i + len - 1 - r : i + r]; }
+              if (q < n) C[p++] = cur[q];
+            }
+            if (p === j) for (let r = 0; r < len; r++) C[p++] = cur[rev ? i + len - 1 - r : i + r];
+            if (tryC(i < j ? i : j)) improved = true;
+          }
+        }
       }
-      temp *= cool;
+    }
+    for (let i = 0; i < n; i++) {
+      for (let j = i + 1; j < n; j++) {
+        C.set(cur); const x = C[i]; C[i] = C[j]; C[j] = x;
+        if (tryC(i)) { improved = true; continue; }
+        C.set(cur); reverse(C, i, j);
+        if (tryC(i)) improved = true;
+      }
     }
   }
-  return best;
+  return { order: cur, cost: curC };
 }
 
 function shuffle(order, rand, swaps) {
@@ -156,4 +272,35 @@ function shuffle(order, rand, swaps) {
     [o[i], o[j]] = [o[j], o[i]];
   }
   return o;
+}
+
+const now = () => globalThis.performance?.now?.() ?? Date.now();
+
+// Varios recocidos independientes (cada uno con su propia semilla) y pulido local de cada resultado.
+// Para pocas paradas, búsqueda exhaustiva. Determinista: misma entrada → misma ruta, salvo que se agote
+// opts.budgetMs (se mira entre arranques; en un móvil lento puede cortar antes con muchas paradas).
+export function optimize(ctx, opts = {}) {
+  const n = ctx.stops.length;
+  if (n === 0) return { order: [], ...evaluate([], ctx) };
+  if (n <= 8) return bruteForce(ctx);
+  const t0 = now();
+  const P = prepare(ctx), S = makeState(n), X = makeState(n);
+  const seed = opts.seed ?? 12345;
+  // Más arranques cuando son baratos: con las rutas normales (10–25 paradas) caben de sobra.
+  const restarts = opts.restarts ?? (n <= 20 ? 32 : n <= 30 ? 24 : 16);
+  const iters = opts.iterations ?? Math.min(60000, 1500 * n);
+  const budget = opts.budgetMs ?? 700;
+  const g = greedy(ctx);
+  let best = null, bestC = Infinity;
+  for (let r = 0; r < restarts; r++) {
+    // al menos dos arranques; después, solo si cabe otro en el presupuesto al ritmo medio hasta ahora
+    if (r >= 2 && now() - t0 + (now() - t0) / r > budget) break;
+    const rand = rng(seed + Math.imul(r, 0x9e3779b9));
+    const init = r === 0 ? g : shuffle(g, rand, Math.ceil(n / 3));
+    const sa = anneal(P, init, rand, iters, S, X);
+    const loc = polish(P, sa.order, S, X);
+    if (loc.cost < bestC) { bestC = loc.cost; best = loc.order; }
+  }
+  const order = Array.from(best);
+  return { order, ...evaluate(order, ctx) };
 }

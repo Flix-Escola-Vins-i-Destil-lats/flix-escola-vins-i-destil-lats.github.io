@@ -12,11 +12,11 @@ Cada cliente queda guardado con su dirección, su horario de entrega, sus notas 
 
 ## Tráfico real
 
-Sin clave, la app usa OpenStreetMap con un factor de tráfico según la hora del día: funciona, pero no ve accidentes. Para tener tráfico real hay que crear una clave gratuita en developer.tomtom.com, sin tarjeta, con 2.500 consultas al día, y pegarla en **Ajustes**.
+Sin clave, la app usa OpenStreetMap con un factor de tráfico según la hora del día: funciona, pero no ve accidentes. Para tener tráfico real hay que crear una clave gratuita en developer.tomtom.com, sin tarjeta (el plan gratuito incluye 2.500 cálculos de rutas al mes: con la versión actual, unos 5 días de reparto), y pegarla en **Ajustes**.
 
 Cada repartidor debería usar su propia clave. Gasto aproximado por día con 15 paradas:
 - unas 180 consultas al planificar;
-- otras 180 al pulsar "Voy a salir";
+- unas 16 al pulsar "Voy a salir" (reaprovecha los tiempos entre paradas del plan);
 - unas 15 cada vez que pulsas "Siguiente".
 
 ## Instalar en el móvil
@@ -29,3 +29,4 @@ Tiene que estar publicada en una dirección https, por ejemplo con Netlify Drop 
 
 - `npm test`: tests del optimizador y del lector de listas.
 - `node test/real-route.mjs`: ruta de prueba con direcciones reales del Baix Llobregat.
+- Al publicar cambios, sube `VERSION` en `sw.js` y en `js/app.js`: los móviles verán "Hay una versión nueva · Actualizar".

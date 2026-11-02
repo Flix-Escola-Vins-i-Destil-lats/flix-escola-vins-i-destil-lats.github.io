@@ -64,3 +64,20 @@ test('25 paradas: rápido, sin retrasos evitables y mejor que el orden de entrad
   assert.ok(best.cost < naive.cost * 0.7, `${best.cost} vs ${naive.cost}`);
   assert.ok(ms < 3000, `${ms} ms`);
 });
+
+import { makeInstance } from './fixtures/instances.mjs';
+
+test('regresión: 15 paradas donde la versión anterior llegaba 10 min más tarde de lo necesario', () => {
+  const { ctx } = makeInstance(15, 4);
+  const best = optimize(ctx);
+  // Óptimo exacto calculado en la auditoría: coste 30083,23 y 29,44 min de retraso inevitable.
+  assert.ok(best.cost < 30083.3, `coste ${best.cost}`);
+  assert.ok(best.late < 29.5, `retraso ${best.late}`);
+});
+
+test('30 paradas en menos de 1 s', () => {
+  const { ctx } = makeInstance(30, 1);
+  const t0 = Date.now();
+  optimize(ctx);
+  assert.ok(Date.now() - t0 < 1000);
+});

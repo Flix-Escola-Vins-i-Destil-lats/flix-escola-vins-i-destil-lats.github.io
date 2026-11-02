@@ -3,6 +3,8 @@ import { geocode, navUrl, currentPosition, coordsFromText } from './geo.js';
 import { computePlan } from './planner.js';
 import * as store from './store.js';
 
+export const VERSION = '1.1.0';
+
 // ---------- Utilidades ----------
 
 const $ = (sel, el = document) => el.querySelector(sel);
@@ -11,6 +13,8 @@ const uid = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(
 const nowMin = () => { const d = new Date(); return d.getHours() * 60 + d.getMinutes() + d.getSeconds() / 60; };
 const todayIso = () => store.isoDate();
 const addDays = (iso, n) => { const d = new Date(iso + 'T12:00:00'); d.setDate(d.getDate() + n); return store.isoDate(d); };
+const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+const smooth = () => (matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth');
 
 const I = {
   pin: '<svg viewBox="0 0 24 24"><path d="M12 21s-7-6.2-7-11.5A7 7 0 0 1 19 9.5C19 14.8 12 21 12 21Z" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="12" cy="9.5" r="2.5" fill="currentColor"/></svg>',
@@ -27,27 +31,45 @@ const I = {
   x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   phone: '<svg viewBox="0 0 24 24"><path d="M6.5 3.5h3l1.5 4-2 1.5a11 11 0 0 0 6 6l1.5-2 4 1.5v3a2 2 0 0 1-2 2A16 16 0 0 1 4.5 5.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
+  ban: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m6 6 12 12" stroke="currentColor" stroke-width="1.8"/></svg>',
 };
+
+const FAIL_REASONS = ['Cerrado', 'No había nadie', 'No aceptan el pedido', 'Otro motivo'];
 
 const ui = {
   tab: 'route',
   date: null,
-  busy: null, // texto del botón ocupado
+  busy: null, // texto del botón ocupado; mientras hay algo calculando no se aceptan otras acciones de la ruta
   clientFilter: '',
-  sheet: null, // { kind, ... }
+  sheet: null, // { kind, initial, ... }
+  persisted: null,
+  update: null, // service worker nuevo esperando
 };
 
-function toast(msg, ms = 2600) {
+function toast(msg, ms = 2600, action = null) {
   const t = $('#toast');
-  t.textContent = msg;
+  t.innerHTML = `<span>${esc(msg)}</span>${action ? `<button class="toast-btn" data-toast-action>${esc(action.label)}</button>` : ''}`;
+  toast._action = action?.fn || null;
+  t.classList.toggle('has-action', !!action);
   t.classList.add('show');
   clearTimeout(toast._t);
-  toast._t = setTimeout(() => t.classList.remove('show'), ms);
+  toast._t = setTimeout(() => { t.classList.remove('show'); toast._action = null; }, ms);
 }
 
 function windowsChips(windows) {
   if (!windows?.length) return '<span class="chip any">Cualquier hora</span>';
   return windows.map(([a, b]) => `<span class="chip win">${fmt(a)}–${fmt(b)}</span>`).join('');
+}
+
+// Qué pasa con el horario del cliente a la hora t: abre más tarde, está abierto hasta…, o ya ha cerrado.
+function windowState(windows, t) {
+  if (!windows?.length) return { label: 'horario', value: 'Libre' };
+  const ws = [...windows].sort((a, b) => a[0] - b[0]);
+  for (const [a, b] of ws) {
+    if (t < a) return { label: 'abre', value: fmt(a) };
+    if (t <= b) return { label: 'cierra', value: fmt(b) };
+  }
+  return { label: 'cerró', value: fmt(ws[ws.length - 1][1]) };
 }
 
 function dayName(iso) {
@@ -69,6 +91,8 @@ function signature(r) {
 }
 const isDirty = (r) => !r.plan || r.planSig !== signature(r);
 const located = (s) => typeof s.lat === 'number' && typeof s.lon === 'number';
+const lateText = (m) => (m > 60 ? 'Fuera de horario' : `${Math.round(m)} min tarde`);
+const minOfDay = (ts) => { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); };
 
 function defaultDate() {
   const t = todayIso();
@@ -87,9 +111,11 @@ function render() {
   eng.innerHTML = `<span class="dot"></span>${live ? 'Tráfico real' : 'Tráfico estimado'}`;
 
   const view = $('#view');
+  let bar = '';
   if (ui.tab === 'route') {
     $('#title').textContent = 'Ruta';
     view.innerHTML = renderRoute();
+    bar = renderActionBar();
   } else if (ui.tab === 'clients') {
     $('#title').textContent = 'Clientes';
     view.innerHTML = renderClients();
@@ -97,6 +123,10 @@ function render() {
     $('#title').textContent = 'Ajustes';
     view.innerHTML = renderSettings();
   }
+  $('#actionbar').innerHTML = bar;
+  $('#actionbar').hidden = !bar;
+  document.body.classList.toggle('has-actionbar', !!bar);
+  renderUpdate();
   renderSheet();
 }
 
@@ -126,17 +156,19 @@ function orderedStops(r) {
 
 function stopCard(s, i, leg, extra = '') {
   const chips = [windowsChips(s.windows)];
-  if (leg?.late > 0.5) chips.push(`<span class="chip late">${lateText(leg.late)}</span>`);
+  if (s.failed) chips.unshift(`<span class="chip late">No entregado · ${esc(s.failed)}</span>`);
+  else if (leg?.late > 0.5) chips.push(`<span class="chip late">${lateText(leg.late)}</span>`);
   else if (leg?.wait > 4) chips.push(`<span class="chip wait">Espera ${Math.round(leg.wait)} min</span>`);
   if (!located(s)) chips.push('<span class="chip late">Sin ubicar</span>');
-  else if (s.needsCheck) chips.push('<span class="chip check">Revisar dirección</span>');
-  const cls = ['stop', s.done ? 'done' : '', !located(s) ? 'unlocated' : ''].join(' ');
-  return `<li><button class="${cls}" data-action="edit-stop" data-id="${s.id}">
-    <span class="num">${s.done ? I.check.replace('<svg', '<svg width="16" height="16"') : i}</span>
+  else if (s.needsCheck && !s.done) chips.push('<span class="chip check">Revisar dirección</span>');
+  const cls = ['stop', s.done ? 'done' : '', s.failed ? 'failed' : '', !located(s) ? 'unlocated' : ''].join(' ');
+  const mark = s.failed ? I.x : I.check;
+  return `<li><button class="${cls}" data-action="edit-stop" data-id="${esc(s.id)}">
+    <span class="num" aria-hidden="true">${s.done ? mark.replace('<svg', '<svg width="16" height="16"') : i}</span>
     <span class="grow">
-      <div class="name">${esc(s.name || s.address)}</div>
-      <div class="addr ellipsis">${esc(s.label || s.address || 'Sin dirección')}</div>
-      <div class="chips">${chips.join('')}</div>
+      <span class="name">${esc(s.name || s.address)}</span>
+      <span class="addr ellipsis">${esc(s.label || s.address || 'Sin dirección')}</span>
+      <span class="chips">${chips.join('')}</span>
     </span>
     <span class="eta">${leg ? `<b>${fmt(leg.arrive)}</b><span>llegada</span>` : extra}</span>
   </button></li>`;
@@ -152,12 +184,12 @@ function renderPlanning(r) {
   if (!r.stops.length) {
     html += `<div class="empty">
       <div class="serif">Sin paradas todavía</div>
-      <div class="small">Pega la lista del portal o añade las paradas a mano. Las direcciones y horarios que ya conozca la app se rellenan solos.</div>
+      <div class="small">Pega la lista de repartos (del portal de Escolà o de un mensaje) o añade las paradas a mano. Las direcciones y horarios que ya conozca la app se rellenan solos.</div>
     </div>`;
   } else if (!dirty) {
     const p = r.plan;
     html += `<div class="card summary">
-      <div><b>${r.stops.length}</b><span>paradas</span></div>
+      <div><b>${r.stops.length}</b><span>${r.stops.length === 1 ? 'parada' : 'paradas'}</span></div>
       <div><b>${fmt(p.end)}</b><span>${s.returnToDepot ? 'vuelta' : 'última entrega'}</span></div>
       <div><b>${Math.round(p.km)}</b><span>km</span></div>
     </div>`;
@@ -177,12 +209,12 @@ function renderPlanning(r) {
   </div>`;
 
   if (stops.length) {
-    html += `<div class="section-title">${dirty ? 'Paradas' : 'Orden óptimo'}</div><ol class="stops">`;
+    html += `<h2 class="section-title">${dirty ? 'Paradas' : 'Orden óptimo'}</h2><ol class="stops">`;
     html += stops.map((st, i) => stopCard(st, i + 1, legs.get(st.id))).join('');
     html += '</ol>';
   }
 
-  const canPlan = r.stops.some(located);
+  const canPlan = r.stops.some((x) => located(x) && !x.done);
   if (canPlan) {
     html += `<div class="cta-bar${!dirty && !ui.busy && ui.date !== todayIso() ? ' static' : ''}">`;
     if (ui.busy) {
@@ -192,7 +224,7 @@ function renderPlanning(r) {
     } else if (ui.date === todayIso()) {
       html += `<button class="btn gold big block" data-action="leave">${I.go}Voy a salir · reconfirmar ruta</button>
         <div class="leave">Salgo
-          <span class="seg">${[0, 10, 20].map((m) => `<button data-action="leave-in" data-m="${m}" class="${s.leaveIn === m ? 'on' : ''}">${m ? `en ${m} min` : 'ya'}</button>`).join('')}</span>
+          <span class="seg">${[0, 10, 20].map((m) => `<button data-action="leave-in" data-m="${m}" class="${s.leaveIn === m ? 'on' : ''}" aria-pressed="${s.leaveIn === m}">${m ? `en ${m} min` : 'ya'}</button>`).join('')}</span>
         </div>`;
     } else {
       html += `<div class="notice gold" style="margin:0">${I.check}<div>Ruta lista. ${esc(dayName(ui.date).rel)}, 10 minutos antes de salir, abre la app y pulsa <b>Voy a salir</b>: la reconfirmo con el tráfico de ese momento.</div></div>`;
@@ -202,93 +234,112 @@ function renderPlanning(r) {
   return html;
 }
 
-function renderActive(r) {
-  const s = settings();
+function enRouteBar(r) {
   const total = r.stops.length;
-  const doneCount = r.stops.filter((x) => x.done).length;
-  const cur = r.stops.find((x) => x.id === r.current);
+  const finished = r.stops.filter((x) => x.done).length;
+  const failed = r.stops.filter((x) => x.failed).length;
+  return `<div class="enroute">
+      <button class="iconbtn" data-action="day" data-d="-1" aria-label="Día anterior">${I.left}</button>
+      <div class="grow"><b>${esc(dayName(ui.date).rel)}</b> · ${finished} de ${total} hechas${failed ? ` <span class="late-ink">· ${failed} sin entregar</span>` : ''}
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="${total}" aria-valuenow="${finished}"><i style="transform:scaleX(${total ? finished / total : 0})"></i></div>
+      </div>
+      <button class="iconbtn" data-action="day" data-d="1" aria-label="Día siguiente">${I.right}</button>
+    </div>`;
+}
+
+function renderActive(r) {
+  const finished = r.stops.filter((x) => x.done).length;
+  const cur = r.stops.find((x) => x.id === r.current && !x.done);
   const legs = new Map((r.plan?.legs || []).map((l) => [l.id, l]));
-  let html = `${dayBar()}<div class="row between small"><span class="muted">${doneCount} de ${total} entregadas</span><span class="faint">En ruta</span></div>
-    <div class="progress"><i style="transform:scaleX(${doneCount / total})"></i></div>`;
+  const pendingCount = r.stops.filter((x) => !x.done).length;
+  let html = enRouteBar(r);
 
   if (r.lastChange) {
-    html += `<div class="notice ${r.lastChange.kind === 'changed' ? 'gold' : 'info'}">${r.lastChange.kind === 'changed' ? I.spark : I.check}<div class="grow">${esc(r.lastChange.text)}</div>
-      <button class="linkbtn" data-action="dismiss-change" aria-label="Cerrar" style="padding:0;text-decoration:none">${I.x.replace('<svg', '<svg width="18" height="18"')}</button></div>`;
+    html += `<div class="notice compact ${r.lastChange.kind === 'changed' ? 'gold' : 'info'}">${r.lastChange.kind === 'changed' ? I.spark : I.check}<div class="grow">${esc(r.lastChange.text)}</div>
+      <button class="iconbtn plain" data-action="dismiss-change" aria-label="Cerrar aviso">${I.x}</button></div>`;
   }
 
   if (cur) {
     const leg = legs.get(cur.id);
-    const close = cur.windows?.length ? fmt(Math.max(...cur.windows.map((w) => w[1]))) : '—';
-    html += `<section class="now">
-      <div class="label">${doneCount === 0 ? 'Primera parada' : 'Siguiente parada'}</div>
-      <h2>${esc(cur.name || cur.address)}</h2>
-      <div class="addr">${esc(cur.label || cur.address || '')}</div>
-      <div class="chips" style="margin-top:10px">${windowsChips(cur.windows)}${leg?.late > 0.5 ? `<span class="chip late">${lateText(leg.late)}</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
+    const ws = windowState(cur.windows, leg ? leg.arrive : nowMin());
+    html += `<section class="now" aria-labelledby="now-name">
+      <div class="label">${finished === 0 ? 'Primera parada' : 'Siguiente parada'}</div>
+      <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
+      <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
+      <div class="chips" style="margin-top:10px">${windowsChips(cur.windows)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(leg.late)}</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
         <div><b>${leg ? fmt(leg.arrive) : '--:--'}</b><span>llegada</span></div>
         <div><b>${leg ? Math.round(leg.drive) : '–'}</b><span>min de viaje</span></div>
-        <div><b>${close}</b><span>cierra</span></div>
+        <div><b>${ws.value}</b><span>${ws.label}</span></div>
       </div>
-      ${cur.notes ? `<div class="notice gold" style="margin:-4px 0 14px">${I.info}<div>${esc(cur.notes)}</div></div>` : ''}
-      <div class="btns">
-        <a class="btn gold big block" href="${navUrl(s.nav, cur)}" target="_blank" rel="noopener">${I.nav}Abrir en ${s.nav === 'gmaps' ? 'Google Maps' : 'Waze'}</a>
-        ${ui.busy ? `<button class="btn forest big block" disabled><span class="spin"></span>${esc(ui.busy)}</button>`
-          : `<button class="btn forest big block" data-action="next">${I.check}Entregado · siguiente</button>`}
-      </div>
+      ${cur.notes ? `<details class="notes"><summary>${I.info}<span class="clamp2">${esc(cur.notes)}</span></summary><p>${esc(cur.notes)}</p></details>` : ''}
       <div class="minor">
-        ${r.stops.filter((x) => !x.done).length > 1 ? '<button class="linkbtn" data-action="postpone">Dejar para luego</button>' : ''}
-        <button class="linkbtn" data-action="edit-stop" data-id="${cur.id}">Editar</button>
-        ${cur.phone ? `<a class="linkbtn" href="tel:${esc(cur.phone.replace(/\s/g, ''))}">Llamar</a>` : ''}
+        ${cur.phone ? `<a class="pill" href="tel:${esc(cur.phone.replace(/[^\d+]/g, ''))}">${I.phone}Llamar</a>` : ''}
+        <button class="pill" data-action="open-fail">${I.ban}No entregado</button>
+        ${pendingCount > 1 ? '<button class="pill" data-action="postpone">Dejar para luego</button>' : ''}
+        <button class="pill" data-action="edit-stop" data-id="${esc(cur.id)}">Editar</button>
       </div>
     </section>`;
   }
 
   const upcoming = (r.plan?.order || []).filter((id) => id !== r.current).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done);
   if (upcoming.length) {
-    html += `<div class="section-title">Después</div><ol class="stops">${upcoming.map((x, i) => stopCard(x, doneCount + i + 2, legs.get(x.id))).join('')}</ol>`;
+    html += `<h2 class="section-title">Después</h2><ol class="stops">${upcoming.map((x, i) => stopCard(x, finished + i + 2, legs.get(x.id))).join('')}</ol>`;
   }
-  const done = r.stops.filter((x) => x.done).sort((a, b) => a.doneAt - b.doneAt);
-  if (done.length) {
-    html += `<div class="section-title">Entregadas</div><ol class="stops">${done.map((x, i) => stopCard(x, i + 1, null, `<b>${fmt(minOfDay(x.doneAt))}</b><span>entregado</span>`)).join('')}</ol>
-      <div style="text-align:center;margin-top:12px"><button class="linkbtn" data-action="undo">Deshacer la última entrega</button></div>`;
-  }
+  html += finishedList(r);
   html += `<div style="text-align:center;margin-top:18px"><button class="linkbtn" data-action="stop-route">Volver a planificar</button></div>`;
   return html;
 }
 
-const lateText = (m) => (m > 60 ? "Fuera de horario" : `${Math.round(m)} min tarde`);
+function finishedList(r) {
+  const done = r.stops.filter((x) => x.done).sort((a, b) => a.doneAt - b.doneAt);
+  if (!done.length) return '';
+  return `<h2 class="section-title">Hechas</h2><ol class="stops">${done.map((x, i) => stopCard(x, i + 1, null, `<b>${fmt(minOfDay(x.doneAt))}</b><span>${x.failed ? 'intento' : 'entregado'}</span>`)).join('')}</ol>
+    <div style="text-align:center;margin-top:12px"><button class="linkbtn" data-action="undo">Deshacer la última</button></div>`;
+}
 
-function minOfDay(ts) { const d = new Date(ts); return d.getHours() * 60 + d.getMinutes(); }
+// Los dos botones del día a día, siempre a mano del pulgar mientras estás en ruta.
+function renderActionBar() {
+  const r = currentRoute();
+  if (r.status !== 'active') return '';
+  const cur = r.stops.find((x) => x.id === r.current && !x.done);
+  if (!cur) return '';
+  const s = settings();
+  return `<a class="btn gold big" href="${esc(navUrl(s.nav, cur))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>
+    ${ui.busy ? `<button class="btn forest big" disabled><span class="spin"></span>${esc(ui.busy)}</button>`
+      : `<button class="btn forest big" data-action="next">${I.check}Entregado</button>`}`;
+}
 
 function renderDone(r) {
   const s = settings();
   const done = r.stops.filter((x) => x.done).sort((a, b) => a.doneAt - b.doneAt);
+  const delivered = done.filter((x) => !x.failed).length;
   const first = done[0], last = done[done.length - 1];
   return `${dayBar()}<div class="card finish">
       <div class="serif">Ruta terminada</div>
-      <div class="muted" style="margin:6px 0 18px">${done.length} entregas · de ${first ? fmt(minOfDay(r.startedAt || first.doneAt)) : '--'} a ${last ? fmt(minOfDay(last.doneAt)) : '--'}</div>
-      <a class="btn gold big block" href="${navUrl(s.nav, s.depot)}" target="_blank" rel="noopener">${I.nav}Volver al almacén</a>
+      <div class="muted" style="margin:6px 0 18px">${plural(delivered, 'entrega', 'entregas')}${done.length > delivered ? ` · ${done.length - delivered} sin entregar` : ''} · de ${first ? fmt(minOfDay(r.startedAt || first.doneAt)) : '--'} a ${last ? fmt(minOfDay(last.doneAt)) : '--'}</div>
+      <a class="btn gold big block" href="${esc(navUrl(s.nav, s.depot))}" target="_blank" rel="noopener">${I.nav}Volver al almacén</a>
       <div style="height:10px"></div>
       <button class="btn ghost block" data-action="goto-tomorrow">Preparar la ruta de mañana</button>
     </div>
-    <div class="section-title">Entregadas</div>
-    <ol class="stops">${done.map((x, i) => stopCard(x, i + 1, null, `<b>${fmt(minOfDay(x.doneAt))}</b><span>entregado</span>`)).join('')}</ol>
-    <div style="text-align:center;margin-top:14px"><button class="linkbtn" data-action="undo">Deshacer la última entrega</button></div>`;
+    ${finishedList(r)}`;
 }
 
 function renderClients() {
   const q = clientKey(ui.clientFilter);
-  const list = store.clientList().filter((c) => !q || c.key.includes(q) || clientKey(c.address || '').includes(q));
-  let html = `<div class="search">${I.search}<input class="input" id="client-search" placeholder="Buscar cliente o dirección" value="${esc(ui.clientFilter)}" autocomplete="off"></div>`;
-  if (!store.clientList().length) {
-    html += `<div class="empty"><div class="serif">La memoria está vacía</div><div class="small">Cada cliente que añadas a una ruta se guarda aquí con su dirección y su horario de entrega. La próxima vez se rellena solo.</div></div>`;
+  const all = store.clientList();
+  const list = all.filter((c) => !q || c.key.includes(q) || clientKey(c.address || '').includes(q));
+  let html = `<div class="search">${I.search}<input class="input" id="client-search" type="search" aria-label="Buscar cliente o dirección" placeholder="Buscar cliente o dirección" value="${esc(ui.clientFilter)}" autocomplete="off"></div>`;
+  if (!all.length) {
+    html += `<div class="empty"><div class="serif">La memoria está vacía</div><div class="small">Cada cliente que añadas a una ruta se guarda aquí con su dirección y su horario de entrega. Si un compañero te pasa su archivo de clientes, impórtalo en Ajustes.</div>
+      <button class="btn line" style="margin-top:14px" data-action="tab" data-tab="settings">Importar clientes</button></div>`;
     return html;
   }
-  html += `<div class="muted small" style="margin:0 2px 10px">${list.length} ${list.length === 1 ? 'cliente recordado' : 'clientes recordados'}</div>`;
+  html += `<div class="muted small" style="margin:0 2px 10px">${list.length === 1 ? '1 cliente recordado' : `${list.length} clientes recordados`}</div>`;
   html += list.map((c) => `<button class="client" data-action="edit-client" data-key="${esc(c.key)}">
-      <div class="row between"><span class="name ellipsis">${esc(c.name)}</span>${c.visits ? `<span class="tiny faint">${c.visits} ${c.visits === 1 ? 'visita' : 'visitas'}</span>` : ''}</div>
-      <div class="addr ellipsis">${esc(c.label || c.address || 'Sin dirección')}</div>
-      <div class="chips">${windowsChips(c.windows)}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</div>
+      <span class="row between"><span class="name ellipsis">${esc(c.name)}</span>${c.visits ? `<span class="tiny faint">${esc(plural(c.visits, 'visita', 'visitas'))}</span>` : ''}</span>
+      <span class="addr ellipsis">${esc(c.label || c.address || 'Sin dirección')}</span>
+      <span class="chips">${windowsChips(c.windows)}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
     </button>`).join('');
   return html;
 }
@@ -296,53 +347,86 @@ function renderClients() {
 function renderSettings() {
   const s = settings();
   return `
-  <div class="section-title" style="margin-top:6px">Tráfico en tiempo real</div>
+  <h2 class="section-title" style="margin-top:6px">Tráfico en tiempo real</h2>
   <div class="card">
     ${s.tomtomKey
       ? `<div class="notice info" style="margin-top:0">${I.check}<div>Activo: rutas con tráfico previsto el día antes y tráfico en vivo al salir y en cada parada.</div></div>`
       : `<div class="notice warn" style="margin-top:0">${I.warn}<div>Sin clave la app funciona, pero estima el tráfico por franja horaria: no ve accidentes ni cortes.</div></div>`}
     <label class="field"><span>Clave de TomTom</span>
-      <div class="input-row"><input class="input" id="set-key" value="${esc(s.tomtomKey)}" placeholder="Pega aquí tu clave" autocomplete="off" autocapitalize="off" spellcheck="false">
-      <button class="btn line" data-action="test-key">Probar</button></div>
+      <span class="input-row"><input class="input" id="set-key" value="${esc(s.tomtomKey)}" placeholder="Pega aquí tu clave" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="btn line" data-action="test-key">Probar</button></span>
     </label>
-    <div class="key-help">Es gratis y sin tarjeta (2.500 consultas al día, de sobra para un repartidor):
-      <ol><li>Entra en <a href="https://developer.tomtom.com/user/register" target="_blank" rel="noopener">developer.tomtom.com</a> y crea una cuenta.</li>
-      <li>En tu panel, abre <b>Keys</b> y copia la clave que aparece.</li>
+    <div class="key-help">La cuenta gratuita de TomTom incluye 2.500 cálculos de rutas al mes, que con la versión actual dan para unos 5 días de reparto: sirve para probar.
+      <ol><li>Crea una cuenta gratis en <a href="https://developer.tomtom.com/" target="_blank" rel="noopener">TomTom para desarrolladores</a>.</li>
+      <li>En tu panel copia la clave (API key).</li>
       <li>Pégala arriba y pulsa <b>Probar</b>.</li></ol>
     </div>
   </div>
 
-  <div class="section-title">Jornada</div>
+  <h2 class="section-title">Jornada</h2>
   <div class="card">
     <label class="field"><span>Hora de inicio</span><input class="input" type="time" id="set-shift" value="${esc(s.shiftStart)}"></label>
-    <label class="field"><span>Minutos de descarga por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="1" max="90" id="set-service" value="${s.service}"></label>
-    <label class="toggle"><span>Volver al almacén al acabar<div class="tiny faint">Cuenta el regreso al calcular la ruta</div></span><input type="checkbox" id="set-return" ${s.returnToDepot ? 'checked' : ''}></label>
+    <label class="field"><span>Minutos de descarga por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="1" max="90" id="set-service" value="${esc(s.service)}"></label>
+    <label class="toggle"><span>Volver al almacén al acabar<span class="tiny faint" style="display:block">Cuenta el regreso al calcular la ruta</span></span><input type="checkbox" id="set-return" ${s.returnToDepot ? 'checked' : ''}></label>
     <div class="toggle" style="border:0;padding-bottom:0"><span>Navegar con</span>
-      <span class="seg"><button data-action="nav-app" data-v="waze" class="${s.nav === 'waze' ? 'on' : ''}">Waze</button><button data-action="nav-app" data-v="gmaps" class="${s.nav === 'gmaps' ? 'on' : ''}">Google Maps</button></span>
+      <span class="seg"><button data-action="nav-app" data-v="waze" class="${s.nav === 'waze' ? 'on' : ''}" aria-pressed="${s.nav === 'waze'}">Waze</button><button data-action="nav-app" data-v="gmaps" class="${s.nav === 'gmaps' ? 'on' : ''}" aria-pressed="${s.nav === 'gmaps'}">Google Maps</button></span>
     </div>
   </div>
 
-  <div class="section-title">Almacén (punto de salida)</div>
+  <h2 class="section-title">Almacén (punto de salida)</h2>
   <div class="card">
-    <div class="row"><span style="color:var(--gold);width:20px">${I.pin}</span><div class="grow"><div style="font-weight:600">${esc(s.depot.name)}</div><div class="tiny faint">${s.depot.lat.toFixed(5)}, ${s.depot.lon.toFixed(5)}</div></div>
+    <div class="row"><span style="color:var(--gold);width:20px" aria-hidden="true">${I.pin}</span><div class="grow"><div style="font-weight:600">${esc(s.depot.name)}</div><div class="tiny faint">${esc(Number(s.depot.lat).toFixed(5))}, ${esc(Number(s.depot.lon).toFixed(5))}</div></div>
     <button class="btn line" data-action="change-depot">Cambiar</button></div>
   </div>
 
-  <div class="section-title">Compartir con compañeros</div>
+  <h2 class="section-title">Clientes y copias</h2>
   <div class="card">
-    <div class="small muted" style="margin-bottom:12px">Pasa tu memoria de clientes (direcciones y horarios) a otro repartidor. Al importar se suman a los suyos sin borrar nada.</div>
+    <div class="small muted" style="margin-bottom:12px">Exporta tus clientes para guardar una copia (en Drive o en un mensaje a ti mismo) o pasársela a otro repartidor. Al importar se suman a los que ya hay sin borrar nada.</div>
     <div class="actions2" style="margin:0">
       <button class="btn ghost" data-action="export">Exportar clientes</button>
       <label class="btn ghost" style="cursor:pointer">Importar<input type="file" id="import-file" accept="application/json,.json" hidden></label>
     </div>
+    <div class="tiny ${ui.persisted ? 'faint' : 'warn-ink'}" style="margin-top:12px">${ui.persisted ? 'Datos protegidos: el móvil no los borrará aunque le falte espacio.' : 'El móvil podría borrar los datos si se queda sin espacio o borras los datos de Chrome: haz una copia de vez en cuando.'}</div>
   </div>
-  <div class="tiny faint" style="text-align:center;margin:22px 0 4px">Ruta Escolà · v1.0 · los datos se guardan solo en este móvil</div>`;
+
+  <div class="tiny faint" style="text-align:center;margin:22px 0 4px;line-height:1.6">Ruta Escolà · v${VERSION}<br>
+    Clientes y rutas se guardan en este móvil. Para buscar direcciones y calcular tiempos se consultan servicios de mapas
+    (OpenStreetMap${s.tomtomKey ? ', TomTom' : ''}).<br>
+    Datos de mapas © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a>${s.tomtomKey ? ' · © TomTom' : ''}</div>`;
 }
 
 // ---------- Hojas (formularios) ----------
 
-function openSheet(sheet) { ui.sheet = sheet; renderSheet(); }
-function closeSheet() { ui.sheet = null; renderSheet(); }
+const background = () => [$('.top'), $('#view'), $('.tabs'), $('#actionbar')];
+
+function snapshot(sh) {
+  return JSON.stringify(sh.draft ?? sh.text ?? '');
+}
+
+function openSheet(sheet) {
+  sheet.initial = snapshot(sheet);
+  ui.sheet = sheet;
+  renderSheet();
+  background().forEach((el) => el && (el.inert = true));
+  $('.sheet')?.focus();
+}
+
+function closeSheet() {
+  ui.sheet = null;
+  background().forEach((el) => el && (el.inert = false));
+  renderSheet();
+}
+
+// Cerrar sin querer (tocar fuera, otra pestaña) no debe tirar lo que estabas escribiendo.
+function requestCloseSheet() {
+  const sh = ui.sheet;
+  if (!sh) return true;
+  if (sh.busy) return false;
+  syncDraft();
+  if (snapshot(sh) !== sh.initial && !confirm('¿Salir sin guardar los cambios?')) return false;
+  closeSheet();
+  return true;
+}
 
 function renderSheet() {
   const wrap = $('#sheet');
@@ -355,14 +439,15 @@ function renderSheet() {
   if (sh.kind === 'stop') body = sheetStop(sh);
   else if (sh.kind === 'paste') body = sheetPaste(sh);
   else if (sh.kind === 'depot') body = sheetDepot(sh);
-  wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${body}</div>`;
+  else if (sh.kind === 'fail') body = sheetFail(sh);
+  wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1"><div class="grab" aria-hidden="true"></div>${body}</div>`;
   $('.sheet', wrap).scrollTop = scroll;
 }
 
 function candidatesHtml(sh) {
-  if (sh.searching) return '<div class="muted small" style="margin:-4px 0 14px"><span class="spin" style="display:inline-block;width:12px;height:12px;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite;vertical-align:-1px"></span> Buscando…</div>';
+  if (sh.searching) return '<div class="muted small" style="margin:-4px 0 14px" role="status"><span class="spin inline"></span> Buscando…</div>';
   if (sh.candidates?.length) {
-    return `<div class="candidates">${sh.candidates.map((c, i) => `<button class="cand ${sh.picked === i ? 'on' : ''}" data-action="pick" data-i="${i}">${I.pin}<span>${esc(c.label)}</span></button>`).join('')}</div>`;
+    return `<div class="candidates">${sh.candidates.map((c, i) => `<button class="cand ${sh.picked === i ? 'on' : ''}" data-action="pick" data-i="${i}" aria-pressed="${sh.picked === i}">${I.pin}<span>${esc(c.label)}</span></button>`).join('')}</div>`;
   }
   if (sh.candidates && !sh.candidates.length) return '<div class="hint" style="color:var(--warn)">No he encontrado esa dirección. Prueba con calle, número y población, o pega un enlace de Google Maps.</div>';
   return '';
@@ -373,26 +458,26 @@ function sheetStop(sh) {
   const isClient = sh.mode === 'client';
   const remembered = !isClient && d.name && store.findClient(d.name);
   const names = store.clientList().map((c) => `<option value="${esc(c.name)}">`).join('');
-  return `<h3>${isClient ? 'Cliente' : sh.id ? 'Editar parada' : 'Nueva parada'}</h3>
+  return `<h2 id="sheet-title">${isClient ? 'Cliente' : sh.id ? 'Editar parada' : 'Nueva parada'}</h2>
     <label class="field"><span>Cliente</span>
       <input class="input" id="f-name" list="client-names" value="${esc(d.name)}" placeholder="Ej. Vinos Paco" autocomplete="off">
       <datalist id="client-names">${names}</datalist>
     </label>
     ${remembered && !sh.id ? `<div class="hint"><span class="chip mem">Recordado</span> dirección y horario rellenados de la última vez</div>` : ''}
     <label class="field"><span>Dirección</span>
-      <div class="input-row"><input class="input" id="f-address" value="${esc(d.address)}" placeholder="Calle, número, población" autocomplete="off">
-      <button class="btn line" data-action="search-address" aria-label="Buscar dirección">${I.search}</button></div>
+      <span class="input-row"><input class="input" id="f-address" value="${esc(d.address)}" placeholder="Calle, número, población" autocomplete="off">
+      <button class="btn line" data-action="search-address" aria-label="Buscar dirección">${I.search}</button></span>
     </label>
     ${candidatesHtml(sh)}
     ${located(d) && !sh.candidates?.length ? `<div class="located">${I.pin}<span>${esc(d.label || 'Ubicación guardada')}</span></div>` : ''}
 
-    <div class="field" style="margin-bottom:8px"><span class="small muted" style="font-weight:500">Horario en que acepta entregas</span></div>
-    <div class="windows-edit">
+    <div class="field" style="margin-bottom:8px"><span class="small muted" style="font-weight:500" id="win-label">Horario en que acepta entregas</span></div>
+    <div class="windows-edit" role="group" aria-labelledby="win-label">
       ${d.windows.map(([a, b], i) => `<div class="win-row">
-        <input class="input" type="time" data-win="${i}" data-end="0" value="${fmt(a)}">
+        <input class="input" type="time" data-win="${i}" data-end="0" value="${fmt(a)}" aria-label="Franja ${i + 1}: desde">
         <span class="sep">a</span>
-        <input class="input" type="time" data-win="${i}" data-end="1" value="${fmt(b)}">
-        <button class="iconbtn" data-action="del-window" data-i="${i}" aria-label="Quitar franja">${I.x}</button>
+        <input class="input" type="time" data-win="${i}" data-end="1" value="${fmt(b)}" aria-label="Franja ${i + 1}: hasta">
+        <button class="iconbtn" data-action="del-window" data-i="${i}" aria-label="Quitar franja ${i + 1}">${I.x}</button>
       </div>`).join('')}
     </div>
     ${d.windows.length ? '' : '<div class="hint">Sin horario: se le puede entregar a cualquier hora.</div>'}
@@ -400,11 +485,11 @@ function sheetStop(sh) {
       <button data-action="add-window" data-a="09:00" data-b="13:00">+ 9:00–13:00</button>
       <button data-action="add-window" data-a="10:00" data-b="13:00">+ 10:00–13:00</button>
       <button data-action="add-window" data-a="16:00" data-b="19:00">+ 16:00–19:00</button>
-      <button data-action="add-window" data-a="08:00" data-b="12:00">+ Otra franja</button>
+      <button data-action="add-window" data-other="1" data-a="08:00" data-b="12:00">+ Otra franja</button>
     </div>
 
     <div class="input-row">
-      <label class="field" style="flex:1"><span>Descarga (min)</span><input class="input" type="number" inputmode="numeric" id="f-service" value="${d.service ?? settings().service}" min="1" max="120"></label>
+      <label class="field" style="flex:1"><span>Descarga (min)</span><input class="input" type="number" inputmode="numeric" id="f-service" value="${esc(d.service ?? settings().service)}" min="1" max="120"></label>
       <label class="field" style="flex:1.4"><span>Teléfono</span><input class="input" type="tel" id="f-phone" value="${esc(d.phone || '')}" placeholder="Opcional"></label>
     </div>
     <label class="field"><span>Notas para la entrega</span><input class="input" id="f-notes" value="${esc(d.notes || '')}" placeholder="Ej. entrar por la puerta de atrás"></label>
@@ -420,10 +505,10 @@ function sheetStop(sh) {
 
 function sheetPaste(sh) {
   const items = sh.parsed;
-  return `<h3>Pegar lista</h3>
-    <div class="small muted" style="margin:-6px 0 12px">Copia las paradas del portal, de un mensaje o escríbelas tú: una por línea, o separadas por una línea en blanco. Si pones horarios (9:00-11:30, de 10 a 13h…) los leo.</div>
-    <label class="field"><textarea class="input" id="f-paste" placeholder="Vinos Paco - C/ Major 12, Sant Feliu - 9:00-11:30&#10;Bar La Plaça | Plaça de la Vila 3, Cornellà">${esc(sh.text || '')}</textarea></label>
-    ${items ? `<div class="section-title" style="margin-top:4px">${items.length} paradas detectadas</div>
+  return `<h2 id="sheet-title">Pegar lista</h2>
+    <div class="small muted" style="margin:-6px 0 12px" id="paste-help">Copia las paradas del portal, de un mensaje o escríbelas tú: una por línea, o separadas por una línea en blanco. Si pones horarios (9:00-11:30, de 10 a 13h…) los leo.</div>
+    <label class="field"><textarea class="input" id="f-paste" aria-label="Lista de paradas" aria-describedby="paste-help" placeholder="Vinos Paco - C/ Major 12, Sant Feliu - 9:00-11:30&#10;Bar La Plaça | Plaça de la Vila 3, Cornellà">${esc(sh.text || '')}</textarea></label>
+    ${items ? `<h3 class="section-title" style="margin-top:4px">${items.length === 1 ? '1 parada detectada' : `${items.length} paradas detectadas`}</h3>
       <ul class="parsed">${items.map((it) => {
         const mem = store.findClient(it.name);
         return `<li><b>${esc(it.name)}</b>${mem ? ' <span class="chip mem">Recordado</span>' : ''}<div class="muted small">${esc(it.address || mem?.address || 'Sin dirección: la buscaré por el nombre')}</div>
@@ -431,17 +516,17 @@ function sheetPaste(sh) {
       }).join('')}</ul>` : ''}
     <div class="foot">
       ${sh.busy ? `<button class="btn gold big block" disabled><span class="spin"></span>${esc(sh.busy)}</button>`
-        : items ? `<button class="btn gold big block" data-action="paste-add">Añadir ${items.length} paradas</button>`
+        : items ? `<button class="btn gold big block" data-action="paste-add">${items.length === 1 ? 'Añadir 1 parada' : `Añadir ${items.length} paradas`}</button>`
         : '<button class="btn gold big block" data-action="paste-read">Leer lista</button>'}
       <button class="btn ghost block" data-action="close">Cancelar</button>
     </div>`;
 }
 
 function sheetDepot(sh) {
-  return `<h3>Punto de salida</h3>
+  return `<h2 id="sheet-title">Punto de salida</h2>
     <label class="field"><span>Dirección del almacén</span>
-      <div class="input-row"><input class="input" id="f-address" value="${esc(sh.draft.address || '')}" placeholder="Calle, número, población">
-      <button class="btn line" data-action="search-address">${I.search}</button></div>
+      <span class="input-row"><input class="input" id="f-address" value="${esc(sh.draft.address || '')}" placeholder="Calle, número, población">
+      <button class="btn line" data-action="search-address" aria-label="Buscar dirección">${I.search}</button></span>
     </label>
     ${candidatesHtml(sh)}
     <div class="foot">
@@ -451,18 +536,29 @@ function sheetDepot(sh) {
     </div>`;
 }
 
+function sheetFail(sh) {
+  const r = currentRoute();
+  const cur = r.stops.find((x) => x.id === sh.id);
+  const more = r.stops.filter((x) => !x.done).length > 1;
+  return `<h2 id="sheet-title">No entregado</h2>
+    <div class="small muted" style="margin:-6px 0 14px">${esc(cur?.name || '')}: ¿qué ha pasado?</div>
+    <div class="reasons">${FAIL_REASONS.map((t) => `<button class="btn ghost block" data-action="fail-reason" data-r="${esc(t)}">${esc(t)}</button>`).join('')}</div>
+    <div class="foot">
+      ${more ? '<button class="btn line block" data-action="postpone">Volver más tarde (dejar para luego)</button>' : ''}
+      <button class="btn ghost block" data-action="close">Cancelar</button>
+    </div>`;
+}
+
 // Copia lo escrito en el formulario al borrador antes de redibujar.
 function syncDraft() {
   const sh = ui.sheet;
-  if (!sh?.draft) { if (sh?.kind === 'paste') sh.text = $('#f-paste')?.value ?? sh.text; return; }
+  if (!sh) return;
+  if (!sh.draft) { if (sh.kind === 'paste') sh.text = $('#f-paste')?.value ?? sh.text; return; }
   const d = sh.draft;
   const v = (id) => $(id)?.value;
   if ($('#f-name')) d.name = v('#f-name').trim();
-  if ($('#f-address')) {
-    const addr = v('#f-address').trim();
-    if (addr !== (d.address || '')) { d.address = addr; }
-  }
-  if ($('#f-service')) d.service = Math.max(1, parseInt(v('#f-service'), 10) || settings().service);
+  if ($('#f-address')) setDraftAddress(sh, v('#f-address').trim());
+  if ($('#f-service')) d.service = Math.min(180, Math.max(1, parseInt(v('#f-service'), 10) || settings().service));
   if ($('#f-phone')) d.phone = v('#f-phone').trim();
   if ($('#f-notes')) d.notes = v('#f-notes').trim();
   document.querySelectorAll('[data-win]').forEach((inp) => {
@@ -473,42 +569,59 @@ function syncDraft() {
   d.windows = d.windows.filter(([a, b]) => b > a).sort((x, y) => x[0] - y[0]);
 }
 
+// Si cambia el texto de la dirección, la ubicación anterior ya no vale.
+function setDraftAddress(sh, addr) {
+  const d = sh.draft;
+  if (addr === (d.address || '')) return;
+  d.address = addr;
+  d.lat = null; d.lon = null; d.label = '';
+  sh.candidates = null; sh.picked = null;
+}
+
 function stopDraft(src = {}) {
   return {
     name: src.name || '',
     address: src.address || '',
-    lat: src.lat, lon: src.lon, label: src.label,
+    lat: located(src) ? src.lat : null,
+    lon: located(src) ? src.lon : null,
+    label: src.label || '',
     windows: (src.windows || []).map((w) => [...w]),
     service: src.service ?? settings().service,
     phone: src.phone || '', notes: src.notes || '',
-    needsCheck: src.needsCheck,
+    needsCheck: !!src.needsCheck,
   };
 }
 
 async function searchAddress() {
   const sh = ui.sheet;
+  if (!sh || sh.searching) return;
   syncDraft();
   const q = [sh.draft.address, sh.kind === 'stop' && !sh.draft.address ? sh.draft.name : ''].filter(Boolean).join(' ');
   if (!q) return toast('Escribe una dirección o el nombre del local');
   const direct = coordsFromText(sh.draft.address);
   sh.searching = true; sh.candidates = null; renderSheet();
+  let res = null, error = null;
   try {
-    let res = await geocode(q, { key: settings().tomtomKey, near: settings().depot });
+    res = await geocode(q, { key: settings().tomtomKey, near: settings().depot });
     // Si con la dirección no sale nada, prueba con el nombre del local (TomTom encuentra negocios).
     if (!res.length && sh.draft.name && sh.draft.address && !direct) res = await geocode(`${sh.draft.name} ${sh.draft.address}`, { key: settings().tomtomKey, near: settings().depot });
-    sh.candidates = res.slice(0, 5);
-    if (res.length === 1) pickCandidate(0);
   } catch (e) {
-    sh.candidates = null;
-    toast(e.message || 'No se pudo buscar');
+    error = e;
   }
   sh.searching = false;
+  if (ui.sheet !== sh) return; // la hoja se cerró mientras buscaba
+  syncDraft(); // no perder lo escrito mientras tanto
+  if (error) { sh.candidates = null; toast(error.message || 'No se pudo buscar'); }
+  else {
+    sh.candidates = res.slice(0, 5);
+    if (res.length === 1) pickCandidate(sh, 0);
+  }
   renderSheet();
 }
 
-function pickCandidate(i) {
-  const sh = ui.sheet;
-  const c = sh.candidates[i];
+function pickCandidate(sh, i) {
+  const c = sh.candidates?.[i];
+  if (!c) return;
   sh.picked = i;
   Object.assign(sh.draft, { lat: c.lat, lon: c.lon, label: c.label, needsCheck: false });
 }
@@ -520,7 +633,7 @@ function fillFromMemory() {
   if (!mem) return;
   syncDraft();
   const d = sh.draft;
-  if (!d.address) Object.assign(d, { address: mem.address, lat: mem.lat, lon: mem.lon, label: mem.label, needsCheck: mem.needsCheck });
+  if (!d.address) Object.assign(d, { address: mem.address, lat: located(mem) ? mem.lat : null, lon: located(mem) ? mem.lon : null, label: mem.label || '', needsCheck: !!mem.needsCheck });
   if (!d.windows.length && mem.windows?.length) d.windows = mem.windows.map((w) => [...w]);
   d.service = mem.service ?? d.service;
   d.phone = d.phone || mem.phone || '';
@@ -529,41 +642,59 @@ function fillFromMemory() {
   renderSheet();
 }
 
+// Lo que se guarda de una parada / cliente. lat/lon a null = sin ubicar (también borra una ubicación vieja).
+function stopFields(d) {
+  const loc = located(d);
+  return {
+    name: d.name, address: d.address,
+    lat: loc ? d.lat : null, lon: loc ? d.lon : null, label: loc ? d.label || '' : '',
+    windows: d.windows, service: d.service, phone: d.phone, notes: d.notes,
+    needsCheck: loc ? !!d.needsCheck : false,
+  };
+}
+
 async function saveStop() {
   const sh = ui.sheet;
+  if (!sh || sh.saving) return false;
   syncDraft();
   const d = sh.draft;
-  if (!d.name && !d.address) return toast('Pon al menos el nombre o la dirección');
-  if (!d.name) d.name = d.address;
+  if (!d.name && !d.address) { toast('Pon al menos el nombre o la dirección'); return false; }
+  if (!d.name) d.name = d.address.slice(0, 120);
   // Quien guarda la ficha ha visto la ubicación que se muestra en ella: se da por revisada.
   if (located(d)) d.needsCheck = false;
   else if (d.address) {
     // Guardar sin pasar por "buscar": tomo el primer resultado y lo marco para revisar.
+    sh.saving = true;
     try {
       const [hit] = await geocode(d.address, { key: settings().tomtomKey, near: settings().depot });
       if (hit) Object.assign(d, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
     } catch { /* se queda sin ubicar */ }
+    sh.saving = false;
+    if (ui.sheet !== sh) return false;
   }
-  const prevKey = sh.mode === 'client' ? sh.key : null;
-  if (prevKey && prevKey !== clientKey(d.name)) store.forgetClient(prevKey);
-  store.rememberClient({ name: d.name, address: d.address, lat: d.lat, lon: d.lon, label: d.label, windows: d.windows, service: d.service, phone: d.phone, notes: d.notes, needsCheck: !!d.needsCheck });
+  const fields = stopFields(d);
+  const renamedFrom = sh.mode === 'client' ? sh.key : undefined;
+  store.rememberClient(fields, { renamedFrom });
 
   if (sh.mode !== 'client') {
     const r = currentRoute();
     if (sh.id) {
       const s = r.stops.find((x) => x.id === sh.id);
-      Object.assign(s, d);
+      if (s) Object.assign(s, fields);
     } else {
-      r.stops.push({ id: uid(), ...d, done: false });
+      r.stops.push({ id: uid(), ...fields, done: false });
+      if (r.status === 'done') r.status = 'draft';
     }
-    if (r.status === 'active') { store.save(); closeSheet(); return replanActive('Parada actualizada'); }
     store.save();
-    toast(located(d) ? (sh.id ? 'Parada guardada' : 'Parada añadida') : 'Guardada sin ubicar: búscala para incluirla');
+    closeSheet();
+    if (r.status === 'active') { replanActive('Parada actualizada'); return true; }
+    toast(located(fields) ? (sh.id ? 'Parada guardada' : 'Parada añadida') : 'Guardada sin ubicar: búscala para incluirla');
   } else {
+    closeSheet();
     toast('Cliente guardado');
   }
-  closeSheet();
   render();
+  return true;
 }
 
 // ---------- Planificar ----------
@@ -597,7 +728,7 @@ async function optimize() {
 }
 
 function friendlyError(e) {
-  if (!navigator.onLine) return 'Sin conexión. Prueba de nuevo cuando tengas cobertura.';
+  if (!navigator.onLine || e?.name === 'TimeoutError' || e?.name === 'TypeError') return 'Sin conexión o muy lenta. Prueba de nuevo cuando tengas cobertura.';
   return e?.message || 'Algo ha fallado al calcular la ruta';
 }
 
@@ -611,44 +742,49 @@ async function leave() {
   ui.busy = 'Mirando el tráfico ahora mismo…';
   render();
   try {
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: s.tomtomKey, live: !!s.tomtomKey, pairs: {}, returnToDepot: s.returnToDepot });
+    // Los tiempos entre paradas calculados al planificar siguen valiendo; lo que se mira en vivo
+    // es la salida desde el almacén. Si se planificó hace más de un día, se recalcula todo.
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: s.tomtomKey, live: !!s.tomtomKey, pairs: r.pairs || {}, maxAgeMin: 24 * 60, returnToDepot: s.returnToDepot });
     r.pairs = plan.pairs; delete plan.pairs;
     const changed = before && before.order.join() !== plan.order.join();
     r.lastChange = changed
       ? { kind: 'changed', text: `He cambiado el orden según el tráfico de ahora. Vuelta prevista a las ${fmt(plan.end)}.` }
-      : { kind: 'same', text: `Ruta confirmada con el tráfico de ahora: el orden se mantiene. Vuelta prevista a las ${fmt(plan.end)}.` };
+      : { kind: 'same', text: `Ruta confirmada: el orden se mantiene. Vuelta prevista a las ${fmt(plan.end)}.` };
     r.plan = plan; r.planSig = signature(r);
     r.status = 'active'; r.current = plan.order[0]; r.startedAt = departAt.getTime(); r.postponed = [];
     store.save();
   } catch (e) {
     // Sin red: se sale con el plan del día anterior.
     if (!before) { ui.busy = null; render(); return toast(friendlyError(e), 4000); }
-    r.status = 'active'; r.current = before.order[0]; r.startedAt = Date.now(); r.postponed = [];
+    r.status = 'active'; r.current = before.order.find((id) => stops.some((x) => x.id === id)); r.startedAt = Date.now(); r.postponed = [];
     r.lastChange = { kind: 'same', text: 'No he podido consultar el tráfico ahora; sigues con la ruta planificada.' };
     store.save();
   }
   ui.busy = null;
   render();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: smooth() });
 }
 
 // Recalcula lo que queda desde donde estás (GPS o la última parada) con tráfico en vivo.
 async function replanActive(msg) {
   const r = currentRoute();
   const s = settings();
+  ui.busy = 'Calculando la siguiente…';
+  render();
+  const gps = await currentPosition(4000);
+
+  // Se mira qué queda después de esperar al GPS, por si algo cambió mientras tanto.
   const pending = r.stops.filter((x) => !x.done && located(x));
   if (!pending.length) {
-    r.status = 'done'; r.current = null; store.save(); render();
+    r.status = 'done'; r.current = null; r.pairs = {};
+    store.save(); ui.busy = null; render();
+    window.scrollTo({ top: 0, behavior: smooth() });
     return toast('¡Ruta terminada!');
   }
   r.postponed = (r.postponed || []).filter((id) => pending.some((p) => p.id === id));
   const postponed = new Set(r.postponed.length < pending.length ? r.postponed : []);
   const active = pending.filter((p) => !postponed.has(p.id));
   const lastDone = r.stops.filter((x) => x.done).sort((a, b) => b.doneAt - a.doneAt)[0];
-
-  ui.busy = 'Calculando la siguiente…';
-  render();
-  const gps = await currentPosition(6000);
   const from = gps && gps.accuracy < 1000 ? gps : lastDone && located(lastDone) ? lastDone : s.depot;
   try {
     const plan = await computePlan({
@@ -662,61 +798,82 @@ async function replanActive(msg) {
     r.current = plan.order[0];
     const next = r.stops.find((x) => x.id === r.current);
     const leg = plan.legs[0];
-    toast(msg ? msg : `Siguiente: ${next.name}${leg ? ` · llegada ${fmt(leg.arrive)}` : ''}`, 3200);
+    if (msg !== null) toast(msg || `Siguiente: ${next.name}${leg ? ` · llegada ${fmt(leg.arrive)}` : ''}`, 3200);
   } catch {
     // Sin red: siguiente del orden previsto.
     const order = (r.plan?.order || []).filter((id) => active.some((p) => p.id === id));
     r.current = order[0] || active[0].id;
+    r.plan = { ...(r.plan || {}), order: [...order, ...active.filter((p) => !order.includes(p.id)).map((p) => p.id), ...[...postponed]] };
     toast('Sin conexión: sigo el orden previsto', 3200);
   }
   r.lastChange = null;
   store.save();
   ui.busy = null;
   render();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+  window.scrollTo({ top: 0, behavior: smooth() });
 }
 
-async function nextStop() {
+// Marca la parada actual como hecha (entregada o no) y pasa a la siguiente, con opción de deshacer.
+async function finishCurrent({ failed = null } = {}) {
   const r = currentRoute();
-  const cur = r.stops.find((x) => x.id === r.current);
-  if (cur) {
-    cur.done = true; cur.doneAt = Date.now();
+  const cur = r.stops.find((x) => x.id === r.current && !x.done);
+  if (!cur) return;
+  cur.done = true; cur.doneAt = Date.now();
+  if (failed) cur.failed = failed; else delete cur.failed;
+  if (!failed) {
     const mem = store.findClient(cur.name);
     if (mem) store.rememberClient({ name: mem.name, visits: (mem.visits || 0) + 1, lastVisit: ui.date });
-    r.postponed = (r.postponed || []).filter((id) => id !== cur.id);
   }
+  r.postponed = (r.postponed || []).filter((id) => id !== cur.id);
   store.save();
-  await replanActive();
+  await replanActive(null);
+  const r2 = currentRoute();
+  const next = r2.stops.find((x) => x.id === r2.current);
+  const what = failed ? `${cur.name}: no entregado` : `${cur.name} entregado`;
+  toast(next && r2.status === 'active' ? `${what} · siguiente: ${next.name}` : what, 6000, { label: 'Deshacer', fn: () => undoLast() });
+}
+
+function undoLast() {
+  if (ui.busy) return;
+  const r = currentRoute();
+  const last = r.stops.filter((x) => x.done).sort((a, b) => b.doneAt - a.doneAt)[0];
+  if (!last) return;
+  last.done = false; delete last.doneAt;
+  if (!last.failed) {
+    const mem = store.findClient(last.name);
+    if (mem?.visits) store.rememberClient({ name: mem.name, visits: mem.visits - 1 });
+  }
+  delete last.failed;
+  r.status = 'active'; r.current = last.id;
+  r.plan = { ...(r.plan || { legs: [] }), order: [last.id, ...(r.plan?.order || []).filter((id) => id !== last.id)] };
+  store.save(); render(); toast(`${last.name} vuelve a estar pendiente`);
 }
 
 // ---------- Eventos ----------
 
+// Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
+const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'open-fail', 'fail-reason', 'remove-stop', 'day']);
+
 const actions = {
-  tab: (el) => { ui.tab = el.dataset.tab; closeSheet(); render(); window.scrollTo(0, 0); },
+  tab: (el) => { if (!requestCloseSheet()) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
   day: (el) => { ui.date = addDays(ui.date, +el.dataset.d); render(); },
   'goto-tomorrow': () => { ui.date = addDays(todayIso(), 1); render(); },
   'leave-in': (el) => { store.setSettings({ leaveIn: +el.dataset.m }); render(); },
   optimize: () => optimize(),
   leave: () => leave(),
-  next: () => nextStop(),
+  next: () => finishCurrent(),
+  'open-fail': () => { const r = currentRoute(); if (r.current) openSheet({ kind: 'fail', id: r.current }); },
+  'fail-reason': (el) => { closeSheet(); finishCurrent({ failed: el.dataset.r }); },
   postpone: () => {
     const r = currentRoute();
+    if (ui.sheet) closeSheet();
     r.postponed = [...new Set([...(r.postponed || []), r.current])];
     store.save();
     replanActive('Dejada para el final');
   },
-  undo: () => {
-    const r = currentRoute();
-    const last = r.stops.filter((x) => x.done).sort((a, b) => b.doneAt - a.doneAt)[0];
-    if (!last) return;
-    last.done = false; delete last.doneAt;
-    r.status = 'active'; r.current = last.id;
-    if (r.plan && !r.plan.order.includes(last.id)) r.plan.order.unshift(last.id);
-    else if (r.plan) r.plan.order = [last.id, ...r.plan.order.filter((id) => id !== last.id)];
-    store.save(); render(); toast(`${last.name} vuelve a estar pendiente`);
-  },
+  undo: () => undoLast(),
   'stop-route': () => {
-    if (!confirm('¿Volver a planificar? Las entregas hechas se mantienen marcadas.')) return;
+    if (!confirm('¿Volver a planificar? Las paradas hechas se mantienen marcadas.')) return;
     const r = currentRoute();
     r.status = 'draft'; r.current = null; r.plan = null; r.lastChange = null;
     store.save(); render();
@@ -728,7 +885,7 @@ const actions = {
     if (s) openSheet({ kind: 'stop', id: s.id, draft: stopDraft(s) });
   },
   'edit-client': (el) => {
-    const c = store.db().clients[el.dataset.key];
+    const c = store.findClient(store.db().clients[el.dataset.key]?.name || '');
     if (c) openSheet({ kind: 'stop', mode: 'client', key: c.key, draft: stopDraft(c) });
   },
   'open-paste': () => openSheet({ kind: 'paste', text: '' }),
@@ -741,12 +898,12 @@ const actions = {
   },
   'paste-add': () => pasteAdd(),
   'search-address': () => searchAddress(),
-  pick: (el) => { pickCandidate(+el.dataset.i); syncDraftKeepCandidates(); },
+  pick: (el) => { syncDraft(); pickCandidate(ui.sheet, +el.dataset.i); renderSheet(); },
   'add-window': (el) => {
     syncDraft();
     const d = ui.sheet.draft;
     let a = toMin(el.dataset.a), b = toMin(el.dataset.b);
-    if (el.textContent.includes('Otra') && d.windows.length) { a = d.windows[d.windows.length - 1][1] + 60; b = Math.min(a + 180, 23 * 60); }
+    if (el.dataset.other && d.windows.length) { a = Math.min(d.windows[d.windows.length - 1][1] + 60, 22 * 60); b = Math.min(a + 180, 23 * 60 + 59); }
     d.windows.push([a, b]);
     d.windows.sort((x, y) => x[0] - y[0]);
     renderSheet();
@@ -756,10 +913,15 @@ const actions = {
   'remove-stop': () => {
     const r = currentRoute();
     const id = ui.sheet.id;
+    const s = r.stops.find((x) => x.id === id);
+    if (!confirm(`¿Quitar ${s?.name || 'esta parada'} de la ruta?`)) return;
+    const idx = r.stops.indexOf(s);
     r.stops = r.stops.filter((x) => x.id !== id);
     if (r.current === id) r.current = null;
     store.save(); closeSheet();
-    if (r.status === 'active') replanActive('Parada quitada'); else render();
+    const restore = () => { r.stops.splice(idx, 0, s); store.save(); if (r.status === 'active') replanActive('Parada recuperada'); else render(); };
+    if (r.status === 'active') replanActive(null).then(() => toast('Parada quitada', 6000, { label: 'Deshacer', fn: restore }));
+    else { render(); toast('Parada quitada', 6000, { label: 'Deshacer', fn: restore }); }
   },
   'forget-client': () => {
     if (!confirm('¿Olvidar este cliente? Se borra su dirección y horario guardados.')) return;
@@ -768,32 +930,36 @@ const actions = {
   'client-to-route': async () => {
     syncDraft();
     const name = ui.sheet.draft.name || ui.sheet.draft.address;
-    await saveStop();
+    if (!(await saveStop())) return;
     const target = store.findClient(name);
     if (!target) return;
     const r = currentRoute();
-    r.stops.push({ id: uid(), ...stopDraft(target), done: false });
+    r.stops.push({ id: uid(), ...stopFields(stopDraft(target)), done: false });
+    if (r.status === 'done') r.status = 'draft';
     store.save();
-    ui.tab = 'route'; render();
+    ui.tab = 'route';
+    if (r.status === 'active') return replanActive(`${target.name} añadido a la ruta`);
+    render();
     toast(`${target.name} añadido a ${dayName(ui.date).rel.toLowerCase()}`);
   },
-  close: () => closeSheet(),
-  'nav-app': (el) => { store.setSettings({ nav: el.dataset.v }); render(); },
+  close: () => requestCloseSheet(),
+  'nav-app': (el) => { store.setSettings({ nav: el.dataset.v === 'gmaps' ? 'gmaps' : 'waze' }); render(); },
   'test-key': () => testKey(),
-  'change-depot': () => openSheet({ kind: 'depot', draft: { address: '' } }),
+  'change-depot': () => openSheet({ kind: 'depot', draft: { address: '', lat: null, lon: null, label: '' } }),
   'save-depot': () => {
     const d = ui.sheet.draft;
-    store.setSettings({ depot: { name: d.label || d.address, lat: d.lat, lon: d.lon } });
+    if (!located(d)) return;
+    store.setSettings({ depot: { name: (d.label || d.address).slice(0, 120), lat: d.lat, lon: d.lon } });
     closeSheet(); render(); toast('Punto de salida cambiado');
   },
   'reset-depot': () => { store.setSettings({ depot: store.DEFAULT_DEPOT }); closeSheet(); render(); toast('Salida: Comercial Escolà'); },
   export: () => exportClients(),
+  'apply-update': () => applyUpdate(),
 };
-
-function syncDraftKeepCandidates() { syncDraft(); renderSheet(); }
 
 async function pasteAdd() {
   const sh = ui.sheet;
+  if (sh.busy) return;
   const r = currentRoute();
   const s = settings();
   const items = sh.parsed;
@@ -804,27 +970,31 @@ async function pasteAdd() {
     renderSheet();
     const mem = store.findClient(it.name);
     const stop = stopDraft(mem || {});
-    stop.name = mem?.name || it.name;
+    stop.name = (mem?.name || it.name).slice(0, 120);
     if (it.windows.length) stop.windows = it.windows;
+    if (it.phone) stop.phone = it.phone;
     const addressChanged = it.address && clientKey(it.address) !== clientKey(mem?.address || '');
     if (it.address) stop.address = it.address;
     if (!mem || addressChanged || !located(stop)) {
+      stop.lat = null; stop.lon = null; stop.label = '';
       try {
-        const q = it.address || it.name;
-        const [hit] = await geocode(q, { key: s.tomtomKey, near: s.depot });
+        const [hit] = await geocode(it.address || it.name, { key: s.tomtomKey, near: s.depot });
         if (hit) Object.assign(stop, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
-        else { delete stop.lat; delete stop.lon; delete stop.label; }
       } catch { /* queda sin ubicar */ }
     }
     if (!located(stop)) unlocated++;
-    store.rememberClient({ name: stop.name, address: stop.address, lat: stop.lat, lon: stop.lon, label: stop.label, windows: stop.windows, service: stop.service, phone: stop.phone, notes: stop.notes, needsCheck: !!stop.needsCheck });
-    r.stops.push({ id: uid(), ...stop, done: false });
+    const fields = stopFields(stop);
+    store.rememberClient(fields);
+    r.stops.push({ id: uid(), ...fields, done: false });
   }
   if (r.status === 'done') r.status = 'draft';
   store.save();
+  sh.busy = null;
   closeSheet();
-  toast(unlocated ? `${items.length} añadidas · ${unlocated} sin ubicar` : `${items.length} paradas añadidas`);
-  if (r.status !== 'active' && r.stops.some(located)) await optimize(); else render();
+  const added = items.length === 1 ? '1 parada añadida' : `${items.length} paradas añadidas`;
+  toast(unlocated ? `${added} · ${unlocated} sin ubicar` : added);
+  if (r.status === 'active') return replanActive(null);
+  if (r.stops.some(located)) await optimize(); else render();
 }
 
 async function testKey() {
@@ -838,7 +1008,6 @@ async function testKey() {
   } catch (e) {
     toast(e.message || 'La clave no funciona', 4000);
   }
-  // Las rutas planificadas se recalculan con la nueva fuente de tiempos.
   render();
 }
 
@@ -857,34 +1026,74 @@ function exportClients() {
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
 
+// ---------- Actualizaciones ----------
+
+function renderUpdate() {
+  const el = $('#update');
+  el.hidden = !ui.update;
+  el.innerHTML = ui.update ? `<span>Hay una versión nueva de la app.</span><button class="btn gold" data-action="apply-update">Actualizar</button>` : '';
+}
+
+function applyUpdate() {
+  if (ui.sheet || ui.busy) return toast('Termina lo que estás haciendo y vuelve a pulsar Actualizar');
+  ui.update?.postMessage('SKIP_WAITING');
+}
+
+function registerServiceWorker() {
+  if (!('serviceWorker' in navigator) || location.protocol === 'file:') return;
+  // Solo se recarga al cambiar de versión, no la primera vez que el service worker toma el control.
+  const hadController = !!navigator.serviceWorker.controller;
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController && !reloading) { reloading = true; location.reload(); } });
+  navigator.serviceWorker.register('sw.js').then((reg) => {
+    const offer = (w) => { if (w && navigator.serviceWorker.controller) { ui.update = w; renderUpdate(); } };
+    offer(reg.waiting);
+    reg.addEventListener('updatefound', () => {
+      const w = reg.installing;
+      w?.addEventListener('statechange', () => { if (w.state === 'installed') offer(w); });
+    });
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+}
+
+// ---------- Escuchas ----------
+
 document.addEventListener('click', (e) => {
+  if (e.target.closest('[data-toast-action]')) {
+    const fn = toast._action;
+    $('#toast').classList.remove('show');
+    toast._action = null;
+    fn?.();
+    return;
+  }
   const el = e.target.closest('[data-action]');
   if (el && actions[el.dataset.action]) {
     e.preventDefault();
+    if (ui.busy && BLOCKED_WHILE_BUSY.has(el.dataset.action)) return;
     actions[el.dataset.action](el);
     return;
   }
-  if (e.target.id === 'sheet') closeSheet(); // tocar fuera de la hoja
+  if (e.target.id === 'sheet') requestCloseSheet(); // tocar fuera de la hoja
 });
 
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'f-name') fillFromMemory();
   if (t.id === 'f-address' && ui.sheet?.draft) {
-    // Dirección cambiada a mano: la ubicación anterior ya no vale. Sin redibujar, para no perder el toque en "buscar".
-    const d = ui.sheet.draft;
-    const val = t.value.trim();
-    if (val !== d.address) { d.address = val; delete d.lat; delete d.lon; delete d.label; ui.sheet.candidates = null; $('.located')?.remove(); }
+    // Sin redibujar, para no perder el toque en "buscar".
+    setDraftAddress(ui.sheet, t.value.trim());
+    if (!located(ui.sheet.draft)) $('.located')?.remove();
   }
   if (t.dataset.win !== undefined) syncDraft();
   if (t.id === 'set-shift') store.setSettings({ shiftStart: t.value || '07:30' });
-  if (t.id === 'set-service') store.setSettings({ service: Math.max(1, parseInt(t.value, 10) || 10) });
+  if (t.id === 'set-service') store.setSettings({ service: Math.min(180, Math.max(1, parseInt(t.value, 10) || 10)) });
   if (t.id === 'set-return') store.setSettings({ returnToDepot: t.checked });
   if (t.id === 'set-key') store.setSettings({ tomtomKey: t.value.trim() });
   if (t.id === 'import-file' && t.files[0]) {
     t.files[0].text().then((txt) => {
-      try { const { added, updated } = store.importClients(txt); toast(`${added} clientes nuevos · ${updated} actualizados`); render(); }
-      catch { toast('Ese archivo no es una exportación de la app'); }
+      try { const { added, updated } = store.importClients(txt); toast(`${plural(added, 'cliente nuevo', 'clientes nuevos')} · ${updated} actualizados`); render(); }
+      catch (err) { toast(/grande/.test(err.message) ? 'El archivo es demasiado grande' : 'Ese archivo no es una exportación de la app'); }
+      t.value = '';
     });
   }
 });
@@ -900,19 +1109,18 @@ document.addEventListener('input', (e) => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && ui.sheet) closeSheet();
+  if (e.key === 'Escape' && ui.sheet) requestCloseSheet();
   if (e.key === 'Enter' && e.target.id === 'f-address') { e.preventDefault(); searchAddress(); }
 });
 
 // Al volver a la app (p. ej. desde Waze), refresca horas y estado.
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !ui.sheet) render(); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !ui.sheet && !ui.busy) render(); });
 
 // ---------- Arranque ----------
 
+store.setSaveErrorHandler(() => toast('No queda espacio para guardar. Exporta tus clientes y borra rutas antiguas.', 8000));
 store.pruneOldRoutes();
 ui.date = defaultDate();
 render();
-
-if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-  navigator.serviceWorker.register('sw.js').catch(() => {});
-}
+store.requestPersist().then((p) => { ui.persisted = p; if (ui.tab === 'settings' && !ui.sheet) render(); });
+registerServiceWorker();

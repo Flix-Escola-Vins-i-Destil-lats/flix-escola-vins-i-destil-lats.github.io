@@ -3,6 +3,7 @@
 import { clientKey } from './parse.js';
 
 const KEY = 'ruta-escola-v1';
+const MAX_IMPORT_BYTES = 1_000_000;
 
 export const DEFAULT_DEPOT = {
   name: 'Comercial Escolà · Sant Joan Despí',
@@ -24,16 +25,27 @@ const empty = () => ({
   routes: {}, // 'YYYY-MM-DD' -> { date, stops: [...], plan, status, pairs, history }
 });
 
-let state = load();
+let onSaveError = () => {};
+export function setSaveErrorHandler(fn) { onSaveError = fn; }
+
+let state; // se carga al final del módulo, cuando ya existen las funciones de validación
 
 function load() {
+  let raw = null;
   try {
-    const raw = localStorage.getItem(KEY);
+    raw = localStorage.getItem(KEY);
     if (!raw) return empty();
     const data = JSON.parse(raw);
     const base = empty();
-    return { ...base, ...data, settings: { ...base.settings, ...(data.settings || {}) } };
+    const clients = {};
+    for (const c of Object.values(data.clients || {})) {
+      const clean = sanitizeClient(c);
+      if (clean) clients[clean.key] = clean;
+    }
+    return { ...base, ...data, clients, settings: { ...base.settings, ...(data.settings || {}) } };
   } catch {
+    // Antes de empezar de cero, se aparta lo que había para poder recuperarlo a mano.
+    try { if (raw) localStorage.setItem(`${KEY}-dañado-${Date.now()}`, raw); } catch { /* sin espacio */ }
     return empty();
   }
 }
@@ -41,8 +53,29 @@ function load() {
 export function save() {
   try {
     localStorage.setItem(KEY, JSON.stringify(state));
-  } catch (e) {
-    console.warn('No se pudo guardar', e);
+    return true;
+  } catch {
+    // Sin espacio: lo prescindible son los tiempos guardados de días que no son hoy.
+    const today = isoDate();
+    for (const r of Object.values(state.routes)) if (r.date !== today) r.pairs = {};
+    try {
+      localStorage.setItem(KEY, JSON.stringify(state));
+      return true;
+    } catch (e) {
+      onSaveError(e);
+      return false;
+    }
+  }
+}
+
+// Pide al navegador que no borre los datos aunque falte espacio en el móvil.
+export async function requestPersist() {
+  try {
+    if (!navigator.storage?.persist) return null;
+    if (await navigator.storage.persisted()) return true;
+    return await navigator.storage.persist();
+  } catch {
+    return null;
   }
 }
 
@@ -54,16 +87,64 @@ export function setSettings(patch) {
   save();
 }
 
-// ---------- Clientes (memoria) ----------
+// ---------- Validación ----------
 
-export function findClient(name) {
-  return state.clients[clientKey(name)] || null;
+const str = (v, max = 300) => (typeof v === 'string' ? v.slice(0, max) : v == null ? '' : String(v).slice(0, max));
+const num = (v, min, max) => (typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max ? v : null);
+const int = (v, min, max, dflt) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n >= min && n <= max ? n : dflt; };
+
+export function cleanWindows(w) {
+  if (!Array.isArray(w)) return [];
+  return w
+    .filter((p) => Array.isArray(p) && p.length === 2)
+    .map(([a, b]) => [int(a, 0, 1440, -1), int(b, 0, 1440, -1)])
+    .filter(([a, b]) => a >= 0 && b > a)
+    .sort((x, y) => x[0] - y[0])
+    .slice(0, 6);
 }
 
-export function rememberClient(data) {
+// Solo campos conocidos y con el tipo correcto: protege de archivos manipulados o rotos.
+export function sanitizeClient(c) {
+  if (!c || typeof c !== 'object') return null;
+  const name = str(c.name, 120).trim();
+  const key = clientKey(name);
+  if (!key) return null;
+  const lat = num(c.lat, -90, 90), lon = num(c.lon, -180, 180);
+  const located = lat !== null && lon !== null;
+  return {
+    key,
+    name,
+    address: str(c.address),
+    lat: located ? lat : null,
+    lon: located ? lon : null,
+    label: str(c.label),
+    windows: cleanWindows(c.windows),
+    service: int(c.service, 1, 180, 10),
+    phone: str(c.phone, 40),
+    notes: str(c.notes, 500),
+    visits: int(c.visits, 0, 100000, 0),
+    lastVisit: /^\d{4}-\d{2}-\d{2}$/.test(c.lastVisit) ? c.lastVisit : undefined,
+    needsCheck: !!c.needsCheck,
+    updatedAt: Math.min(int(c.updatedAt, 0, Number.MAX_SAFE_INTEGER, 0), Date.now()),
+  };
+}
+
+state = load();
+
+// ---------- Clientes (memoria) ----------
+
+const own = (key) => (Object.hasOwn(state.clients, key) ? state.clients[key] : null);
+
+export function findClient(name) {
+  return own(clientKey(name));
+}
+
+// Campos a null borran el dato (p. ej. una ubicación que ya no vale); undefined lo deja como estaba.
+export function rememberClient(data, { renamedFrom } = {}) {
   const key = clientKey(data.name);
   if (!key) return null;
-  const prev = state.clients[key] || { visits: 0 };
+  const prev = own(key) || (renamedFrom && own(renamedFrom)) || { visits: 0 };
+  if (renamedFrom && renamedFrom !== key) delete state.clients[renamedFrom];
   const merged = { ...prev, ...stripUndefined(data), key, updatedAt: Date.now() };
   state.clients[key] = merged;
   save();
@@ -71,7 +152,7 @@ export function rememberClient(data) {
 }
 
 export function forgetClient(key) {
-  delete state.clients[key];
+  if (Object.hasOwn(state.clients, key)) delete state.clients[key];
   save();
 }
 
@@ -97,8 +178,11 @@ export function hasRoute(date) {
 export function pruneOldRoutes(keepDays = 21) {
   const limit = new Date();
   limit.setDate(limit.getDate() - keepDays);
-  const iso = isoDate(limit);
-  for (const d of Object.keys(state.routes)) if (d < iso) delete state.routes[d];
+  const iso = isoDate(limit), today = isoDate();
+  for (const [d, r] of Object.entries(state.routes)) {
+    if (d < iso) delete state.routes[d];
+    else if (d < today || r.status === 'done') r.pairs = {}; // los tiempos solo sirven el mismo día
+  }
   save();
 }
 
@@ -114,15 +198,21 @@ export function exportClients() {
 }
 
 export function importClients(json) {
+  if (json.length > MAX_IMPORT_BYTES) throw new Error('Archivo demasiado grande');
   const data = JSON.parse(json);
-  if (!data || typeof data.clients !== 'object') throw new Error('Archivo no válido');
+  if (!data || typeof data.clients !== 'object' || Array.isArray(data.clients)) throw new Error('Archivo no válido');
   let added = 0, updated = 0;
-  for (const c of Object.values(data.clients)) {
-    if (!c?.name) continue;
-    const key = clientKey(c.name);
-    const mine = state.clients[key];
-    if (!mine) { state.clients[key] = { ...c, key }; added++; }
-    else if ((c.updatedAt || 0) > (mine.updatedAt || 0)) { state.clients[key] = { ...mine, ...c, key }; updated++; }
+  for (const raw of Object.values(data.clients)) {
+    const c = sanitizeClient(raw);
+    if (!c) continue;
+    // Una ubicación que viene de otro móvil se marca para revisar la primera vez.
+    if (c.lat !== null) c.needsCheck = true;
+    const mine = own(c.key);
+    if (!mine) { state.clients[c.key] = c; added++; }
+    else if (c.updatedAt > (mine.updatedAt || 0)) {
+      state.clients[c.key] = { ...mine, ...c, visits: Math.max(mine.visits || 0, c.visits), lastVisit: mine.lastVisit || c.lastVisit };
+      updated++;
+    }
   }
   save();
   return { added, updated };
