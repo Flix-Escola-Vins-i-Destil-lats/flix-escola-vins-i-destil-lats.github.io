@@ -1,8 +1,8 @@
 // Une la matriz de tiempos con el optimizador y guarda los tiempos entre paradas para reutilizarlos
 // en cada "Siguiente" (así solo se pide de nuevo la fila desde donde estás, que es la que cambia).
 
-import { travelMatrix } from './geo.js';
-import { optimize } from './solver.js';
+import { travelMatrix, trafficLegs } from './geo.js';
+import { optimize, evaluate } from './solver.js';
 
 // La clave incluye la ubicación: si una parada o el almacén se mueven, sus tiempos guardados dejan de valer.
 const nodeKey = (p, id) => `${id}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
@@ -25,16 +25,17 @@ function haveFreshPairs(keys, pairs, src, maxAgeMin) {
  * from: {lat, lon} punto de salida. stops: [{id, lat, lon, windows:[[a,b]], service}].
  * startMin: minuto del día en que se sale. departAt: Date de salida (para el tráfico).
  * maxAgeMin: antigüedad máxima de los tiempos entre paradas guardados para reutilizarlos.
+ * orsKey: openrouteservice (tiempos de conducción). tomtomKey + live: corrección con tráfico (no se guarda).
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, key, live, pairs = {}, maxAgeMin = 90, returnToDepot = true }) {
+export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, pairs = {}, maxAgeMin = 90, returnToDepot = true }) {
   if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs };
-  const src = key ? 'tomtom' : 'osrm';
+  const src = orsKey ? 'ors' : 'estimate';
   const dests = [...stops, depot];
   // keys[i] para i < n: paradas; keys[n]: almacén.
   const keys = [...stops.map((s) => nodeKey(s, s.id)), nodeKey(depot, 'depot')];
   const reusePairs = haveFreshPairs(keys, pairs, src, maxAgeMin);
   const origins = reusePairs ? [from] : [from, ...stops];
-  const mx = await travelMatrix(origins, dests, { key, departAt, live });
+  const mx = await travelMatrix(origins, dests, { orsKey, departAt });
 
   const now = Date.now();
   const next = {};
@@ -67,7 +68,31 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
     returnTo: returnToDepot,
     stops: stops.map((s) => ({ windows: s.windows || [], service: s.service ?? 10 })),
   };
-  const best = optimize(ctx);
+  let best = optimize(ctx);
+
+  // Con TomTom: se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
+  // y se vuelve a optimizar; si el orden cambia, se comprueba también el nuevo (máximo 3 consultas).
+  let traffic = false;
+  if (tomtomKey) {
+    const seen = new Set();
+    for (let round = 0; round < 3; round++) {
+      const key = best.order.join(',');
+      if (seen.has(key)) break;
+      seen.add(key);
+      const nodes = [0, ...best.order, ...(returnToDepot ? [n + 1] : [])];
+      const point = (i) => (i === 0 ? from : i === n + 1 ? depot : stops[i - 1]);
+      let legsMin = null;
+      try { legsMin = await trafficLegs(nodes.map(point), { key: tomtomKey, departAt, live }); } catch (e) { if (/clave/.test(e.message)) throw e; }
+      if (!legsMin) break;
+      traffic = true;
+      legsMin.forEach((m, k) => {
+        const a = nodes[k], b = nodes[k + 1];
+        if (b === n + 1) back[a] = m; else matrix[a][b] = m;
+      });
+      const again = optimize(ctx);
+      best = again.order.join(',') === key ? evaluateOrder(best.order, ctx) : again;
+    }
+  }
 
   let km = 0, prev = 0;
   const legs = best.legs.map((leg) => {
@@ -85,10 +110,14 @@ export async function computePlan({ from, stops, depot, startMin, departAt, key,
     late: best.late,
     wait: best.wait,
     km,
-    source: mx.source,
-    live: mx.live,
+    source: traffic ? 'tomtom' : mx.source,
+    live: traffic && !!live,
     computedAt: now,
     startMin,
     pairs: next,
   };
+}
+
+function evaluateOrder(order, ctx) {
+  return { order, ...evaluate(order, ctx) };
 }

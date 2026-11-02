@@ -1,15 +1,25 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// Red simulada: tiempos = distancia en "grados" × 1000 min; cuenta cuántos orígenes se piden.
-let requests = [];
-globalThis.fetch = async (url) => {
-  const m = String(url).match(/driving\/([^?]+)\?sources=([^&]+)&destinations=([^&]+)/);
-  const pts = m[1].split(';').map((p) => p.split(',').map(Number));
-  const src = m[2].split(';').map(Number), dst = m[3].split(';').map(Number);
-  requests.push(src.length);
-  const d = (a, b) => Math.hypot(pts[a][0] - pts[b][0], pts[a][1] - pts[b][1]) * 1000;
-  return { ok: true, json: async () => ({ code: 'Ok', durations: src.map((a) => dst.map((b) => d(a, b) * 60)), distances: src.map((a) => dst.map((b) => d(a, b))) }) };
+// Red simulada. openrouteservice: tiempos = distancia en "grados" × 1000 min. TomTom: lo que diga `jam`.
+let requests = [], tomtomCalls = 0, jam = null, lastOrsBody = null;
+globalThis.fetch = async (url, opts = {}) => {
+  url = String(url);
+  if (url.includes('openrouteservice')) {
+    const body = JSON.parse(opts.body);
+    lastOrsBody = body;
+    requests.push(body.sources.length);
+    const p = body.locations;
+    const d = (a, b) => Math.hypot(p[a][0] - p[b][0], p[a][1] - p[b][1]) * 1000;
+    return { ok: true, status: 200, json: async () => ({ durations: body.sources.map((a) => body.destinations.map((b) => d(a, b) * 60)), distances: body.sources.map((a) => body.destinations.map((b) => d(a, b))) }) };
+  }
+  if (url.includes('calculateRoute')) {
+    tomtomCalls++;
+    const pts = url.match(/calculateRoute\/([^/]+)\/json/)[1].split(':').map((s) => s.split(',').map(Number));
+    const legs = pts.slice(1).map((b, i) => ({ summary: { travelTimeInSeconds: (jam?.(pts[i], b) ?? 5) * 60 } }));
+    return { ok: true, status: 200, json: async () => ({ routes: [{ legs }] }) };
+  }
+  throw new Error('URL inesperada ' + url);
 };
 const { computePlan } = await import('../js/planner.js');
 
@@ -19,30 +29,49 @@ const stops = [
   { id: 'a', lat: 41.38, lon: 2.08, windows: [], service: 5 },
   { id: 'b', lat: 41.39, lon: 2.09, windows: [], service: 5 },
 ];
+const base = { from: depot, depot, startMin: 450, departAt: night, orsKey: 'k' };
 
 test('reutiliza los tiempos entre paradas y solo pide la fila desde donde estás', async () => {
   requests = [];
-  const p1 = await computePlan({ from: depot, depot, stops, startMin: 450, departAt: night });
-  const p2 = await computePlan({ from: depot, depot, stops, startMin: 450, departAt: night, pairs: p1.pairs });
+  const p1 = await computePlan({ ...base, stops });
+  const p2 = await computePlan({ ...base, stops, pairs: p1.pairs });
   assert.deepEqual(requests, [3, 1]);
   assert.deepEqual(p2.order, p1.order);
+  assert.equal(p1.source, 'ors');
 });
 
 test('si una parada cambia de sitio, sus tiempos guardados no se reutilizan', async () => {
   requests = [];
-  const p1 = await computePlan({ from: depot, depot, stops, startMin: 450, departAt: night });
+  const p1 = await computePlan({ ...base, stops });
   const moved = [stops[0], { ...stops[1], lat: 41.5, lon: 2.3 }];
-  await computePlan({ from: depot, depot, stops: moved, startMin: 450, departAt: night, pairs: p1.pairs });
+  await computePlan({ ...base, stops: moved, pairs: p1.pairs });
   assert.deepEqual(requests, [3, 3]);
 });
 
-test('OSRM recibe cada punto una sola vez', async () => {
-  let sent = '';
-  const f = globalThis.fetch;
-  globalThis.fetch = (url) => { sent = url; return f(url); };
-  await computePlan({ from: depot, depot, stops, startMin: 450, departAt: night });
-  globalThis.fetch = f;
-  const coords = sent.match(/driving\/([^?]+)/)[1].split(';');
-  assert.equal(coords.length, new Set(coords).size);
-  assert.equal(coords.length, 3); // salida = almacén, a, b
+test('cada punto se manda una sola vez', async () => {
+  await computePlan({ ...base, stops });
+  assert.equal(lastOrsBody.locations.length, 3); // salida = almacén, a, b
+});
+
+test('sin clave de rutas: estimación por distancia, sin red', async () => {
+  requests = [];
+  const p = await computePlan({ ...base, stops, orsKey: '' });
+  assert.equal(p.source, 'estimate');
+  assert.equal(requests.length, 0);
+  assert.equal(p.order.length, 2);
+});
+
+test('con TomTom: un atasco en un tramo cambia el orden y no se guarda en la caché', async () => {
+  // Sin tráfico el orden natural es a → b. Atasco de 60 min para llegar a "a" desde el almacén.
+  const near = (p, q) => Math.abs(p[0] - q.lat) < 1e-4 && Math.abs(p[1] - q.lon) < 1e-4;
+  const p0 = await computePlan({ ...base, stops });
+  tomtomCalls = 0;
+  jam = (from, to) => (near(from, depot) && near(to, stops[0]) ? 60 : 5);
+  const p1 = await computePlan({ ...base, stops, tomtomKey: 't', live: true });
+  jam = null;
+  assert.deepEqual(p0.order, ['a', 'b']);
+  assert.deepEqual(p1.order, ['b', 'a']);
+  assert.ok(tomtomCalls >= 1 && tomtomCalls <= 3, `${tomtomCalls} consultas`);
+  assert.equal(p1.source, 'tomtom');
+  assert.ok(Object.values(p1.pairs).every((x) => x.src === 'ors'));
 });

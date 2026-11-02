@@ -1,9 +1,9 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
-import { geocode, navUrl, currentPosition, coordsFromText } from './geo.js';
+import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
 import { computePlan } from './planner.js';
 import * as store from './store.js';
 
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 
 // ---------- Utilidades ----------
 
@@ -85,7 +85,7 @@ function currentRoute() { return store.route(ui.date); }
 
 function signature(r) {
   return JSON.stringify([
-    settings().shiftStart, settings().returnToDepot, !!settings().tomtomKey,
+    settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey,
     r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, s.service]),
   ]);
 }
@@ -106,9 +106,9 @@ function defaultDate() {
 function render() {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('on', b.dataset.tab === ui.tab));
   const eng = $('#engine');
-  const live = !!settings().tomtomKey;
-  eng.className = `engine ${live ? 'live' : 'est'}`;
-  eng.innerHTML = `<span class="dot"></span>${live ? 'Tráfico real' : 'Tráfico estimado'}`;
+  const { orsKey, tomtomKey } = settings();
+  eng.className = `engine ${tomtomKey && orsKey ? 'live' : orsKey ? 'est' : 'off'}`;
+  eng.innerHTML = `<span class="dot"></span>${tomtomKey && orsKey ? 'Tráfico real' : orsKey ? 'Tráfico estimado' : 'Falta configurar'}`;
 
   const view = $('#view');
   let bar = '';
@@ -197,7 +197,7 @@ function renderPlanning(r) {
       const lateOnes = p.legs.filter((l) => l.late > 0.5).map((l) => r.stops.find((x) => x.id === l.id)?.name).filter(Boolean);
       html += `<div class="notice warn">${I.warn}<div>No da tiempo a llegar dentro del horario a <b>${esc(lateOnes.join(', '))}</b>. Revisa sus horarios o avisa al cliente.</div></div>`;
     }
-    html += `<div class="notice info">${I.info}<div>Calculada con ${p.source === 'tomtom' ? 'el tráfico previsto para esa hora' : 'tiempos estimados (sin clave de tráfico)'}. Salida ${fmt(p.startMin)} desde el almacén.</div></div>`;
+    html += `<div class="notice info">${I.info}<div>Calculada con ${p.source === 'tomtom' ? 'el tráfico previsto para esa hora' : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.</div></div>`;
   }
 
   const unloc = r.stops.filter((x) => !located(x)).length;
@@ -347,20 +347,24 @@ function renderClients() {
 function renderSettings() {
   const s = settings();
   return `
-  <h2 class="section-title" style="margin-top:6px">Tráfico en tiempo real</h2>
+  <h2 class="section-title" style="margin-top:6px">Rutas y tráfico</h2>
   <div class="card">
-    ${s.tomtomKey
-      ? `<div class="notice info" style="margin-top:0">${I.check}<div>Activo: rutas con tráfico previsto el día antes y tráfico en vivo al salir y en cada parada.</div></div>`
-      : `<div class="notice warn" style="margin-top:0">${I.warn}<div>Sin clave la app funciona, pero estima el tráfico por franja horaria: no ve accidentes ni cortes.</div></div>`}
-    <label class="field"><span>Clave de TomTom</span>
+    ${s.orsKey ? '' : `<div class="notice warn" style="margin-top:0">${I.warn}<div>Falta la clave de rutas: sin ella la app ordena las paradas por distancia en línea recta.</div></div>`}
+    <label class="field"><span>Clave de rutas (openrouteservice) · necesaria</span>
+      <span class="input-row"><input class="input" id="set-ors" value="${esc(s.orsKey)}" placeholder="Pega aquí tu clave" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <button class="btn line" data-action="test-ors">Probar</button></span>
+    </label>
+    <div class="key-help">Gratis y sin tarjeta (500 rutas al día, de sobra):
+      <ol><li>Crea una cuenta en <a href="https://account.heigit.org/" target="_blank" rel="noopener">account.heigit.org</a>.</li>
+      <li>En el panel crea una clave (token) y cópiala.</li>
+      <li>Pégala arriba y pulsa <b>Probar</b>.</li></ol>
+    </div>
+    <label class="field" style="margin-top:18px"><span>Clave de TomTom · opcional, tráfico en tiempo real</span>
       <span class="input-row"><input class="input" id="set-key" value="${esc(s.tomtomKey)}" placeholder="Pega aquí tu clave" autocomplete="off" autocapitalize="off" spellcheck="false">
       <button class="btn line" data-action="test-key">Probar</button></span>
     </label>
-    <div class="key-help">La cuenta gratuita de TomTom incluye 2.500 cálculos de rutas al mes, que con la versión actual dan para unos 5 días de reparto: sirve para probar.
-      <ol><li>Crea una cuenta gratis en <a href="https://developer.tomtom.com/" target="_blank" rel="noopener">TomTom para desarrolladores</a>.</li>
-      <li>En tu panel copia la clave (API key).</li>
-      <li>Pégala arriba y pulsa <b>Probar</b>.</li></ol>
-    </div>
+    <div class="key-help">${s.tomtomKey ? 'Activo: la ruta se corrige con el tráfico previsto al planificar y con el de ese momento al salir y en cada parada.' : 'Sin ella el tráfico se estima por franja horaria: no ve accidentes ni cortes.'}
+      Gratis en <a href="https://developer.tomtom.com/" target="_blank" rel="noopener">TomTom para desarrolladores</a> (20.000 rutas al mes; la app gasta unas 40 al día).</div>
   </div>
 
   <h2 class="section-title">Jornada</h2>
@@ -390,9 +394,12 @@ function renderSettings() {
   </div>
 
   <div class="tiny faint" style="text-align:center;margin:22px 0 4px;line-height:1.6">Ruta Escolà · v${VERSION}<br>
-    Clientes y rutas se guardan en este móvil. Para buscar direcciones y calcular tiempos se consultan servicios de mapas
-    (OpenStreetMap${s.tomtomKey ? ', TomTom' : ''}).<br>
-    Datos de mapas © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a>${s.tomtomKey ? ' · © TomTom' : ''}</div>`;
+    Clientes y rutas se guardan en este móvil. Para buscar direcciones y calcular tiempos se consultan
+    servicios de mapas; tu posición solo se usa para calcular la siguiente parada.<br>
+    Direcciones: © <a href="https://www.icgc.cat/" target="_blank" rel="noopener">ICGC</a> (CC BY 4.0) ·
+    <a href="https://www.cartociudad.es/" target="_blank" rel="noopener">CartoCiudad</a> © IGN (CC BY 4.0) ·
+    © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a><br>
+    Rutas: © <a href="https://openrouteservice.org/" target="_blank" rel="noopener">openrouteservice</a> by HeiGIT${s.tomtomKey ? ' · Tráfico: © TomTom' : ''}</div>`;
 }
 
 // ---------- Hojas (formularios) ----------
@@ -447,7 +454,7 @@ function renderSheet() {
 function candidatesHtml(sh) {
   if (sh.searching) return '<div class="muted small" style="margin:-4px 0 14px" role="status"><span class="spin inline"></span> Buscando…</div>';
   if (sh.candidates?.length) {
-    return `<div class="candidates">${sh.candidates.map((c, i) => `<button class="cand ${sh.picked === i ? 'on' : ''}" data-action="pick" data-i="${i}" aria-pressed="${sh.picked === i}">${I.pin}<span>${esc(c.label)}</span></button>`).join('')}</div>`;
+    return `<div class="candidates">${sh.candidates.map((c, i) => `<button class="cand ${sh.picked === i ? 'on' : ''}" data-action="pick" data-i="${i}" aria-pressed="${sh.picked === i}">${I.pin}<span>${esc(c.label)}${c.doubt ? `<span class="doubt">${c.otherTown ? 'Otra población' : 'Otra calle'}: compruébala</span>` : ''}</span></button>`).join('')}</div>`;
   }
   if (sh.candidates && !sh.candidates.length) return '<div class="hint" style="color:var(--warn)">No he encontrado esa dirección. Prueba con calle, número y población, o pega un enlace de Google Maps.</div>';
   return '';
@@ -596,15 +603,16 @@ async function searchAddress() {
   const sh = ui.sheet;
   if (!sh || sh.searching) return;
   syncDraft();
-  const q = [sh.draft.address, sh.kind === 'stop' && !sh.draft.address ? sh.draft.name : ''].filter(Boolean).join(' ');
+  const byName = sh.kind === 'stop' && !sh.draft.address;
+  const q = byName ? sh.draft.name : sh.draft.address;
   if (!q) return toast('Escribe una dirección o el nombre del local');
   const direct = coordsFromText(sh.draft.address);
   sh.searching = true; sh.candidates = null; renderSheet();
   let res = null, error = null;
   try {
-    res = await geocode(q, { key: settings().tomtomKey, near: settings().depot });
-    // Si con la dirección no sale nada, prueba con el nombre del local (TomTom encuentra negocios).
-    if (!res.length && sh.draft.name && sh.draft.address && !direct) res = await geocode(`${sh.draft.name} ${sh.draft.address}`, { key: settings().tomtomKey, near: settings().depot });
+    res = await geocode(q, { kind: byName ? 'name' : 'address' });
+    // Si con la dirección no sale nada, prueba a buscar el local por su nombre.
+    if (!res.length && sh.draft.name && sh.draft.address && !direct) res = await geocode(`${sh.draft.name}, ${sh.draft.address}`, { kind: 'name' });
   } catch (e) {
     error = e;
   }
@@ -614,7 +622,7 @@ async function searchAddress() {
   if (error) { sh.candidates = null; toast(error.message || 'No se pudo buscar'); }
   else {
     sh.candidates = res.slice(0, 5);
-    if (res.length === 1) pickCandidate(sh, 0);
+    if (res.length === 1 && !res[0].doubt) pickCandidate(sh, 0);
   }
   renderSheet();
 }
@@ -666,8 +674,9 @@ async function saveStop() {
     // Guardar sin pasar por "buscar": tomo el primer resultado y lo marco para revisar.
     sh.saving = true;
     try {
-      const [hit] = await geocode(d.address, { key: settings().tomtomKey, near: settings().depot });
-      if (hit) Object.assign(d, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
+      const [hit] = await geocode(d.address);
+      // Un resultado dudoso (otra población u otra calle) no se usa: desviaría la ruta sin que te dieras cuenta.
+      if (hit && !hit.doubt) Object.assign(d, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
     } catch { /* se queda sin ubicar */ }
     sh.saving = false;
     if (ui.sheet !== sh) return false;
@@ -712,10 +721,10 @@ async function optimize() {
   const departAt = new Date(ui.date + 'T00:00:00');
   if (ui.date === todayIso() && nowMin() > startMin) startMin = Math.ceil(nowMin());
   departAt.setMinutes(startMin);
-  ui.busy = s.tomtomKey ? 'Calculando con el tráfico previsto…' : 'Calculando la mejor ruta…';
+  ui.busy = s.tomtomKey && s.orsKey ? 'Calculando con el tráfico previsto…' : 'Calculando la mejor ruta…';
   render();
   try {
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: s.tomtomKey, live: false, pairs: {}, returnToDepot: s.returnToDepot });
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: false, pairs: {}, returnToDepot: s.returnToDepot });
     r.pairs = plan.pairs; delete plan.pairs;
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
@@ -744,7 +753,7 @@ async function leave() {
   try {
     // Los tiempos entre paradas calculados al planificar siguen valiendo; lo que se mira en vivo
     // es la salida desde el almacén. Si se planificó hace más de un día, se recalcula todo.
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, key: s.tomtomKey, live: !!s.tomtomKey, pairs: r.pairs || {}, maxAgeMin: 24 * 60, returnToDepot: s.returnToDepot });
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true, pairs: r.pairs || {}, maxAgeMin: 24 * 60, returnToDepot: s.returnToDepot });
     r.pairs = plan.pairs; delete plan.pairs;
     const changed = before && before.order.join() !== plan.order.join();
     r.lastChange = changed
@@ -788,7 +797,7 @@ async function replanActive(msg) {
   const from = gps && gps.accuracy < 1000 ? gps : lastDone && located(lastDone) ? lastDone : s.depot;
   try {
     const plan = await computePlan({
-      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), key: s.tomtomKey, live: !!s.tomtomKey,
+      from, depot: s.depot, startMin: nowMin(), departAt: new Date(), orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true,
       stops: active.map((x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: x.windows, service: x.service })),
       pairs: r.pairs || {}, returnToDepot: s.returnToDepot,
     });
@@ -945,6 +954,7 @@ const actions = {
   close: () => requestCloseSheet(),
   'nav-app': (el) => { store.setSettings({ nav: el.dataset.v === 'gmaps' ? 'gmaps' : 'waze' }); render(); },
   'test-key': () => testKey(),
+  'test-ors': () => testOrs(),
   'change-depot': () => openSheet({ kind: 'depot', draft: { address: '', lat: null, lon: null, label: '' } }),
   'save-depot': () => {
     const d = ui.sheet.draft;
@@ -978,8 +988,8 @@ async function pasteAdd() {
     if (!mem || addressChanged || !located(stop)) {
       stop.lat = null; stop.lon = null; stop.label = '';
       try {
-        const [hit] = await geocode(it.address || it.name, { key: s.tomtomKey, near: s.depot });
-        if (hit) Object.assign(stop, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
+        const [hit] = await geocode(it.address || it.name, { kind: it.address ? 'address' : 'name' });
+        if (hit && !hit.doubt) Object.assign(stop, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
       } catch { /* queda sin ubicar */ }
     }
     if (!located(stop)) unlocated++;
@@ -997,14 +1007,29 @@ async function pasteAdd() {
   if (r.stops.some(located)) await optimize(); else render();
 }
 
+const PROBE = [{ lat: 41.372083, lon: 2.077356 }, { lat: 41.3756, lon: 2.1316 }]; // almacén → Carrer de Sants
+
 async function testKey() {
   const key = $('#set-key').value.trim();
   store.setSettings({ tomtomKey: key });
-  if (!key) { render(); return toast('Clave quitada: tráfico estimado'); }
+  if (!key) { render(); return toast('Clave de TomTom quitada: tráfico estimado'); }
   try {
-    const res = await geocode('Sant Joan Despí', { key });
-    if (!res.length) throw new Error('Respuesta vacía');
-    toast('Clave correcta: tráfico real activado ✓', 3200);
+    const legs = await trafficLegs(PROBE, { key, live: true });
+    if (!legs) throw new Error('TomTom no ha respondido; prueba en un rato');
+    toast(`Clave correcta: tráfico real activado ✓ (almacén → Sants ahora: ${Math.round(legs[0])} min)`, 4000);
+  } catch (e) {
+    toast(e.message || 'La clave no funciona', 4000);
+  }
+  render();
+}
+
+async function testOrs() {
+  const key = $('#set-ors').value.trim();
+  store.setSettings({ orsKey: key });
+  if (!key) { render(); return toast('Clave de rutas quitada'); }
+  try {
+    const mx = await travelMatrix([PROBE[0]], [PROBE[1]], { orsKey: key, departAt: new Date() });
+    toast(`Clave correcta ✓ (almacén → Sants: ${mx.km[0][0].toFixed(1)} km)`, 4000);
   } catch (e) {
     toast(e.message || 'La clave no funciona', 4000);
   }
@@ -1089,6 +1114,7 @@ document.addEventListener('change', (e) => {
   if (t.id === 'set-service') store.setSettings({ service: Math.min(180, Math.max(1, parseInt(t.value, 10) || 10)) });
   if (t.id === 'set-return') store.setSettings({ returnToDepot: t.checked });
   if (t.id === 'set-key') store.setSettings({ tomtomKey: t.value.trim() });
+  if (t.id === 'set-ors') store.setSettings({ orsKey: t.value.trim() });
   if (t.id === 'import-file' && t.files[0]) {
     t.files[0].text().then((txt) => {
       try { const { added, updated } = store.importClients(txt); toast(`${plural(added, 'cliente nuevo', 'clientes nuevos')} · ${updated} actualizados`); render(); }

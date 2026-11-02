@@ -10,14 +10,12 @@ App web para el móvil (se instala como una app normal) que ordena la ruta de re
 
 Cada cliente queda guardado con su dirección, su horario de entrega, sus notas y su teléfono. La próxima vez basta con escribir su nombre.
 
-## Tráfico real
+## Servicios de mapas (todos permiten uso de empresa)
 
-Sin clave, la app usa OpenStreetMap con un factor de tráfico según la hora del día: funciona, pero no ve accidentes. Para tener tráfico real hay que crear una clave gratuita en developer.tomtom.com, sin tarjeta (el plan gratuito incluye 2.500 cálculos de rutas al mes: con la versión actual, unos 5 días de reparto), y pegarla en **Ajustes**.
-
-Cada repartidor debería usar su propia clave. Gasto aproximado por día con 15 paradas:
-- unas 180 consultas al planificar;
-- unas 16 al pulsar "Voy a salir" (reaprovecha los tiempos entre paradas del plan);
-- unas 15 cada vez que pulsas "Siguiente".
+- **Direcciones:** geocodificador oficial del ICGC y, si no encuentra la dirección, CartoCiudad (IGN). Los dos son CC BY 4.0, así que se pueden guardar y compartir entre repartidores. Antes de buscar, la app traduce "Calle Mayor, Esplugas" a "Carrer Major, Esplugues". Si el resultado cae en otra población o en otra calle, la parada queda "Sin ubicar" hasta que la confirmes.
+- **Locales por su nombre:** OpenStreetMap (Nominatim), como mucho una petición por segundo.
+- **Tiempos de conducción:** openrouteservice, con una clave gratuita de account.heigit.org (500 consultas al día, la app gasta unas 20). Sin clave, la app ordena las paradas por distancia aproximada.
+- **Tráfico en tiempo real (opcional):** clave gratuita de TomTom (20.000 rutas al mes). Por cada cálculo, la app pide a TomTom la ruta elegida (de 1 a 3 consultas), corrige los tramos con atasco y vuelve a optimizar. Esos tiempos no se guardan, porque las condiciones de TomTom no lo permiten.
 
 ## Instalar en el móvil
 

@@ -13,6 +13,7 @@ export const DEFAULT_DEPOT = {
 
 const empty = () => ({
   settings: {
+    orsKey: '',
     tomtomKey: '',
     depot: DEFAULT_DEPOT,
     shiftStart: '07:30',
