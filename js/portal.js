@@ -1,6 +1,7 @@
 // Puente con el portal de Escolà (portal.escoladist.com/Repartos).
-// El portal no deja que otra web lea sus datos, así que el puente es un marcador del navegador: se toca
-// con el portal abierto y la sesión iniciada, lee la ruta pendiente y la comparte con la app.
+// El portal no deja que otra web lea sus datos: la ruta llega como JSON (parsePortal) desde algo que corre
+// dentro del portal. El marcador de abajo funciona en el navegador del ordenador; en el móvil, Edge bloquea
+// los marcadores con código y Chrome los ignora (comprobado en noviembre de 2026).
 import { parseWindows, mergeWindows } from './parse.js';
 
 // ---------- Horarios del portal ----------

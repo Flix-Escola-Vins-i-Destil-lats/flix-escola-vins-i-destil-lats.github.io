@@ -1,10 +1,10 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
 import { computePlan } from './planner.js';
-import { parsePortal, BRIDGE_URL } from './portal.js';
+import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.5.1';
+export const VERSION = '1.5.2';
 
 // ---------- Utilidades ----------
 
@@ -203,8 +203,8 @@ function firstSteps() {
       ${step(false, 2, 'Practica una ruta',
         `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Voy a salir», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
          <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
-      ${step(false, 3, 'Trae tu ruta de verdad',
-        `<div class="small muted">Del portal, con el marcador «Pasar a Ruta» (cómo crearlo: Ajustes → Ruta del portal). De un mensaje, compártelo a Ruta o usa «Pegar lista». Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
+      ${step(false, 3, 'Pega tu ruta de verdad',
+        `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
     </ol>
   </div>`;
 }
@@ -476,17 +476,6 @@ function renderSettings() {
   <div class="card">
     <div class="row"><span style="color:var(--gold);width:20px" aria-hidden="true">${I.pin}</span><div class="grow"><div style="font-weight:600">${esc(s.depot.name)}</div><div class="tiny faint">${esc(Number(s.depot.lat).toFixed(5))}, ${esc(Number(s.depot.lon).toFixed(5))}</div></div>
     <button class="btn line" data-action="change-depot">Cambiar</button></div>
-  </div>
-
-  <h2 class="section-title">Ruta del portal</h2>
-  <div class="card">
-    <div class="small muted">La ruta de mañana sale en el portal sobre las 17:30. Con el marcador «Pasar a Ruta» la traes con nombres, direcciones, teléfonos y horarios, sin copiar nada a mano.</div>
-    <ol class="steps" style="margin-top:12px">
-      <li><span class="n">1</span><div class="grow"><b>Copia el marcador</b>
-        <button class="btn line block" data-action="copy-bridge" style="margin-top:8px">Copiar «Pasar a Ruta»</button></div></li>
-      <li><span class="n">2</span><div class="grow"><b>Guárdalo en el navegador</b><div class="small muted">En Edge o Chrome del móvil, abre el portal e inicia sesión. Añádelo a favoritos (☆), edita ese favorito: nombre <b>Pasar a Ruta</b> y, en la dirección, borra lo que hay y pega lo copiado.</div></div></li>
-      <li><span class="n">3</span><div class="grow"><b>Cada tarde</b><div class="small muted">Con el portal abierto, escribe <b>Pasar a Ruta</b> en la barra de direcciones y toca el favorito (el de la estrella). Toca la ruta y, al compartir, elige <b>Ruta</b>.</div></div></li>
-    </ol>
   </div>
 
   <h2 class="section-title">Copias y compañeros</h2>
@@ -1081,7 +1070,6 @@ const actions = {
     renderSheet();
   },
   'paste-add': () => pasteAdd(),
-  'copy-bridge': () => copyBridge(),
   'search-address': () => searchAddress(),
   pick: (el) => { syncDraft(); pickCandidate(ui.sheet, +el.dataset.i); renderSheet(); },
   'add-window': (el) => {
@@ -1197,15 +1185,6 @@ async function pasteAdd() {
   toast(unlocated ? `${added} · ${unlocated} sin ubicar` : added);
   if (r.status === 'active') return replanActive(null);
   if (r.stops.some(located)) await optimize(); else render();
-}
-
-async function copyBridge() {
-  try {
-    await navigator.clipboard.writeText(BRIDGE_URL);
-    toast('Copiado. Ahora guárdalo como favorito en el navegador (paso 2).', 5000);
-  } catch {
-    toast('No he podido copiarlo: prueba otra vez', 4000);
-  }
 }
 
 const PROBE = [{ lat: 41.372083, lon: 2.077356 }, { lat: 41.3756, lon: 2.1316 }]; // almacén → Carrer de Sants
