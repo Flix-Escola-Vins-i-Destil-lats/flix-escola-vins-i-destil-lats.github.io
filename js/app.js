@@ -6,7 +6,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.9.0';
+export const VERSION = '1.10.0';
 
 // ---------- Utilidades ----------
 
@@ -130,6 +130,18 @@ function parkingFor(r) {
 const parkingOf = (r, id) => parkingFor(r).find((p) => p.ids.includes(id)) || null;
 const walkUrl = (p) => `https://www.google.com/maps/dir/?api=1&destination=${Number(p.lat)},${Number(p.lon)}&travelmode=walking`;
 
+// Quita todos los aparcamientos de la ruta (las entregas vuelven a ir en furgoneta) y recalcula.
+async function clearParking() {
+  const r = currentRoute();
+  const n = parkingFor(r).length;
+  if (!n) return false;
+  if (!(await ask(n === 1 ? '¿Quitar el aparcamiento? Sus entregas vuelven a ir en furgoneta.' : `¿Quitar los ${n} aparcamientos? Sus entregas vuelven a ir en furgoneta.`, { ok: 'Quitar', danger: true }))) return false;
+  r.parking = [];
+  store.save();
+  if (r.status === 'active') await replanActive('Aparcamientos quitados'); else await optimize();
+  return true;
+}
+
 // Para el mapa: paradas ubicadas en el orden de la ruta (en ruta, primero las hechas), con su tramo del plan.
 function mapApi() {
   return {
@@ -162,6 +174,7 @@ function mapApi() {
       store.save();
       if (r.status === 'active') await replanActive('Aparcamiento añadido'); else await optimize();
     },
+    clear: () => clearParking(),
     async remove(key) {
       const r = currentRoute();
       r.parking = (r.parking || []).filter((p) => groupKey(p.ids) !== key);
@@ -285,7 +298,7 @@ function firstSteps() {
            <button class="btn ghost" data-action="tab" data-tab="settings">Ir a Ajustes</button>
          </div>`)}
       ${step(false, 2, 'Practica una ruta',
-        `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Voy a salir», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
+        `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Empezar ruta», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
          <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
       ${step(false, 3, portalApp() ? 'Trae tu ruta de verdad' : 'Pega tu ruta de verdad', portalApp()
         ? `<div class="small muted">Toca «Traer la ruta del portal», entra con tu usuario del portal (solo la primera vez) y pulsa el botón dorado. Ahí mismo puedes pedir que te avise cuando salga la ruta de mañana.</div>`
@@ -357,9 +370,11 @@ function renderPlanning(r) {
       html += `<div class="notice warn">${I.warn}<div>No da tiempo a llegar dentro del horario a <b>${esc(lateOnes.join(', '))}</b>. Revisa sus horarios o avisa al cliente.</div></div>`;
     }
     if (!s.useWindows) html += `<div class="notice gold">${I.info}<div>Horarios de los clientes apagados: el orden sale por cercanía y tráfico. Se encienden en <button class="linkbtn" data-action="tab" data-tab="settings" style="color:inherit">Ajustes</button>.</div></div>`;
-    html += `<div class="notice info">${I.info}<div>Calculada con ${p.source === 'tomtom' ? 'el tráfico previsto para esa hora' : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.</div></div>`;
+    const at = p.computedAt ? ` Calculada ${store.isoDate(new Date(p.computedAt)) === todayIso() ? 'hoy' : 'el ' + new Date(p.computedAt).toLocaleDateString('es-ES')} a las ${fmt(minOfDay(p.computedAt))}.` : '';
+    html += `<div class="notice info">${I.info}<div>Con ${p.source === 'tomtom' ? (p.live ? 'el tráfico de ese momento' : 'el tráfico previsto para esa hora') : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.${at}</div></div>`;
   }
 
+  if (parkingFor(r).length > 1) html += `<div style="text-align:right;margin:-4px 2px 8px"><button class="linkbtn" data-action="park-clear">Quitar todos los aparcamientos</button></div>`;
   for (const p of parkingFor(r)) {
     const names = p.ids.map((id) => r.stops.find((x) => x.id === id)?.name).filter(Boolean);
     html += `<div class="notice gold">${I.pin}<div class="grow">Aparcas una vez ${p.dum ? `en la zona DUM de <b>${esc(p.label)}</b>` : 'en el punto medio'} para ${esc(names.join(', '))}.
@@ -390,12 +405,12 @@ function renderPlanning(r) {
     } else if (dirty) {
       html += `<button class="btn gold big block" data-action="optimize">${I.spark}Optimizar ruta</button>`;
     } else if (ui.date === todayIso()) {
-      html += `<button class="btn gold big block" data-action="leave">${I.go}Voy a salir · reconfirmar ruta</button>
-        <div class="leave">Salgo
-          <span class="seg">${[0, 10, 20].map((m) => `<button data-action="leave-in" data-m="${m}" class="${s.leaveIn === m ? 'on' : ''}" aria-pressed="${s.leaveIn === m}">${m ? `en ${m} min` : 'ya'}</button>`).join('')}</span>
-        </div>`;
+      html += `<div class="actions2" style="margin:0">
+        <button class="btn line big" data-action="recalc">${I.spark}Recalcular</button>
+        <button class="btn gold big" data-action="start-route">${I.go}Empezar ruta</button>
+      </div>`;
     } else {
-      html += `<div class="notice gold" style="margin:0">${I.check}<div>Ruta lista. ${esc(dayName(ui.date).rel)}, 10 minutos antes de salir, abre la app y pulsa <b>Voy a salir</b>: la reconfirmo con el tráfico de ese momento.</div></div>`;
+      html += `<button class="btn line big block" data-action="recalc">${I.spark}Recalcular</button>`;
       // Para mirarla antes: la primera parada en el navegador (o su aparcamiento, si tiene).
       const first = stops.find((x) => !x.done && located(x));
       if (first) html += `<a class="btn line block" style="margin-top:10px" href="${esc(navUrl(s.nav, parkingOf(r, first.id) || first))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'} a la primera: ${esc(first.name)}</a>`;
@@ -452,6 +467,7 @@ function renderActive(r) {
       <div class="minor">
         <a class="pill spro" href="${esc(sproUrl())}" data-action="spro" data-keep-default="1">${I.pin}SPRO · ${dumChip(r, cur) ? 'otra vez' : 'aparcar'}</a>
         ${cur.phone ? `<a class="pill" href="tel:${esc(cur.phone.replace(/[^\d+]/g, ''))}">${I.phone}Llamar</a>` : ''}
+        <button class="pill" data-action="recalc">${I.spark}Recalcular</button>
         ${pendingCount > 1 ? '<button class="pill" data-action="postpone">Dejar para luego</button>' : ''}
         <button class="pill" data-action="edit-stop" data-id="${esc(cur.id)}">Editar</button>
       </div>
@@ -975,23 +991,29 @@ function routeStopsForPlan(r) {
   return r.stops.filter((s) => !s.done && located(s)).map(planStop);
 }
 
-async function optimize() {
+// recalc: el botón Recalcular. El día de la ruta se calcula saliendo ahora, con el tráfico de ahora.
+async function optimize({ recalc = false } = {}) {
   const r = currentRoute();
   const s = settings();
   const stops = routeStopsForPlan(r);
   if (!stops.length) return toast('No hay paradas ubicadas');
+  const today = ui.date === todayIso();
   let startMin = toMin(s.shiftStart) ?? 450;
   const departAt = new Date(ui.date + 'T00:00:00');
-  if (ui.date === todayIso() && nowMin() > startMin) startMin = Math.ceil(nowMin());
+  if (today && nowMin() > startMin) startMin = Math.ceil(nowMin());
   departAt.setMinutes(startMin);
-  ui.busy = s.tomtomKey && s.orsKey ? 'Calculando con el tráfico previsto…' : 'Calculando la mejor ruta…';
+  const live = recalc && today;
+  const before = r.plan && !isDirty(r) ? r.plan.order.join() : null;
+  ui.busy = live && s.tomtomKey ? 'Mirando el tráfico ahora mismo…' : s.tomtomKey && s.orsKey ? 'Calculando con el tráfico previsto…' : 'Calculando la mejor ruta…';
   render();
   try {
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: false, pairs: {}, returnToDepot: s.returnToDepot, parking: parkingFor(r) });
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live, pairs: {}, returnToDepot: s.returnToDepot, parking: parkingFor(r) });
     r.pairs = plan.pairs; delete plan.pairs;
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
-    toast(plan.warning ? `Ruta aproximada (${plan.warning}). Revisa la clave en Ajustes.` : 'Ruta optimizada', plan.warning ? 6000 : 2600);
+    const what = !recalc ? 'Ruta optimizada'
+      : before && before !== plan.order.join() ? `He cambiado el orden · vuelta ${fmt(plan.end)}` : `Mismo orden · vuelta ${fmt(plan.end)}`;
+    toast(plan.warning ? `Ruta aproximada (${plan.warning}). Revisa la clave en Ajustes.` : what, plan.warning ? 6000 : 3200);
   } catch (e) {
     toast(friendlyError(e), 4000);
   }
@@ -1004,38 +1026,13 @@ function friendlyError(e) {
   return e?.message || 'Algo ha fallado al calcular la ruta';
 }
 
-async function leave() {
+// Empieza la ruta con el orden que hay. Para mirar el tráfico de ese momento está «Recalcular».
+function startRoute() {
   const r = currentRoute();
-  const s = settings();
-  const stops = routeStopsForPlan(r);
-  const startMin = Math.ceil(nowMin()) + (s.leaveIn || 0);
-  const departAt = new Date(Date.now() + (s.leaveIn || 0) * 60000);
-  const before = r.plan;
-  ui.busy = 'Mirando el tráfico ahora mismo…';
-  render();
-  try {
-    // Los tiempos entre paradas calculados al planificar siguen valiendo; lo que se mira en vivo
-    // es la salida desde el almacén. Si se planificó hace más de un día, se recalcula todo.
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true, pairs: r.pairs || {}, maxAgeMin: 24 * 60, returnToDepot: s.returnToDepot, parking: parkingFor(r) });
-    r.pairs = plan.pairs; delete plan.pairs;
-    const changed = before && before.order.join() !== plan.order.join();
-    r.lastChange = plan.warning
-      ? { kind: 'same', text: `Ruta aproximada: ${plan.warning}. Vuelta prevista a las ${fmt(plan.end)}.` }
-      : changed
-        ? { kind: 'changed', text: `He cambiado el orden según el tráfico de ahora. Vuelta prevista a las ${fmt(plan.end)}.` }
-        : { kind: 'same', text: `Ruta confirmada: el orden se mantiene. Vuelta prevista a las ${fmt(plan.end)}.` };
-    r.plan = plan; r.planSig = signature(r);
-    r.status = 'active'; r.current = plan.order[0]; r.startedAt = departAt.getTime(); r.postponed = [];
-    markCurrent(r, plan.legs[0], departAt.getTime());
-    store.save();
-  } catch (e) {
-    // Sin red: se sale con el plan del día anterior.
-    if (!before) { ui.busy = null; render(); return toast(friendlyError(e), 4000); }
-    r.status = 'active'; r.current = before.order.find((id) => stops.some((x) => x.id === id)); r.startedAt = Date.now(); r.postponed = [];
-    r.lastChange = { kind: 'same', text: 'No he podido consultar el tráfico ahora; sigues con la ruta planificada.' };
-    store.save();
-  }
-  ui.busy = null;
+  if (!r.plan || isDirty(r)) return optimize();
+  r.status = 'active'; r.current = r.plan.order[0]; r.startedAt = Date.now(); r.postponed = []; r.lastChange = null;
+  markCurrent(r, r.plan.legs[0], Date.now());
+  store.save();
   render();
   window.scrollTo({ top: 0, behavior: smooth() });
 }
@@ -1151,15 +1148,15 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
+const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'recalc', 'start-route', 'park-clear', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
   day: (el) => { ui.date = addDays(ui.date, +el.dataset.d); render(); },
   'goto-tomorrow': () => { ui.date = addDays(todayIso(), 1); render(); },
-  'leave-in': (el) => { store.setSettings({ leaveIn: +el.dataset.m }); render(); },
   optimize: () => optimize(),
-  leave: () => leave(),
+  recalc: () => (currentRoute().status === 'active' ? replanActive('Recalculada con el tráfico de ahora') : optimize({ recalc: true })),
+  'start-route': () => startRoute(),
   next: () => finishCurrent(),
   postpone: () => {
     const r = currentRoute();
@@ -1276,6 +1273,7 @@ const actions = {
     store.save();
     if (r.status === 'active') replanActive('Aparcamiento quitado'); else optimize();
   },
+  'park-clear': () => clearParking(),
   'open-map': () => import('./map.js').then((m) => m.openMap(mapApi())).catch(() => toast('No se ha podido abrir el mapa')),
 };
 

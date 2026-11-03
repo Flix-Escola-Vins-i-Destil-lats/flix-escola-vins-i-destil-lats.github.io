@@ -188,7 +188,8 @@ function renderPanel() {
     const pending = d.stops.filter((s) => !s.done).length;
     return panel(`<div class="small muted">${pending === 1 ? '1 parada' : `${pending} paradas`} ${d.planned ? 'en el orden de la ruta' : 'sin optimizar todavía'}${d.unlocated ? ` · ${d.unlocated} sin ubicar no ${d.unlocated === 1 ? 'sale' : 'salen'}` : ''}.
       La línea dorada es el camino en furgoneta; la verde discontinua, a pie desde un aparcamiento.</div>
-      <button class="btn gold big block" data-map="group" style="margin-top:12px"${pending < 2 ? ' disabled' : ''}>Agrupar entregas para aparcar</button>`);
+      <button class="btn gold big block" data-map="group" style="margin-top:12px"${pending < 2 ? ' disabled' : ''}>Agrupar entregas para aparcar</button>
+      ${d.parking.length ? `<button class="btn danger block" data-map="clear" style="margin-top:8px">Quitar ${d.parking.length === 1 ? 'el aparcamiento' : `los ${d.parking.length} aparcamientos`}</button>` : ''}`);
   }
   if (st.mode === 'select') {
     const sel = members();
@@ -249,6 +250,7 @@ function onClick(e) {
     st.mode = 'view'; st.selected = []; st.spot = null;
     return run('Recalculando la ruta…', () => st.api.accept(ids, spot));
   }
+  if (what === 'clear') { st.map.closePopup(); return run('Recalculando la ruta…', () => st.api.clear()); }
   if (what === 'unpark') { st.map.closePopup(); return run('Recalculando la ruta…', () => st.api.remove(el.dataset.key)); }
 }
 
