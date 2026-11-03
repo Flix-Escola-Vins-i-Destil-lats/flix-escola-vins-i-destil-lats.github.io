@@ -3,6 +3,7 @@
 
 import { travelMatrix, trafficLegs } from './geo.js';
 import { optimize, evaluate } from './solver.js';
+import { walkPlan, walkMin } from './parking.js';
 
 // La clave incluye la ubicación: si una parada o el almacén se mueven, sus tiempos guardados dejan de valer.
 const nodeKey = (p, id) => `${id}@${p.lat.toFixed(5)},${p.lon.toFixed(5)}`;
@@ -26,8 +27,10 @@ function haveFreshPairs(keys, pairs, src, maxAgeMin) {
  * startMin: minuto del día en que se sale. departAt: Date de salida (para el tráfico).
  * maxAgeMin: antigüedad máxima de los tiempos entre paradas guardados para reutilizarlos.
  * orsKey: openrouteservice (tiempos de conducción). tomtomKey + live: corrección con tráfico (no se guarda).
+ * parking: aparcamientos aceptados [{ids, lat, lon}]: entre paradas del mismo se va a pie pasando por la furgoneta.
+ * parkedAt: índice del aparcamiento donde está ahora la furgoneta (si se sale andando desde from).
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, pairs = {}, maxAgeMin = 90, returnToDepot = true }) {
+export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, pairs = {}, maxAgeMin = 90, returnToDepot = true, parking = [], parkedAt = null }) {
   if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs };
   const src = orsKey ? 'ors' : 'estimate';
   const dests = [...stops, depot];
@@ -57,9 +60,19 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     return next[pairKey(keys[i - 1], keys[j - 1])];
   };
 
+  // A pie: dentro de un aparcamiento, de la entrega a la furgoneta y de ahí a la siguiente (sin coche);
+  // para llegar a él o salir de él, el coche más el paseo entre la furgoneta y la entrega.
+  const wp = walkPlan(stops, parking);
+  const fromG = parkedAt != null && parking[parkedAt] ? parkedAt : -1;
+  const fromWalk = fromG >= 0 ? walkMin(from, parking[fromG]) : 0;
+  const node = (i) => (i === 0 ? { group: fromG, walk: fromWalk } : i === n + 1 ? { group: -1, walk: 0 } : wp[i - 1]);
+  const onFoot = (i, j) => { const a = node(i), b = node(j); return a.group >= 0 && a.group === b.group; };
+  const walkOf = (i, j) => node(i).walk + node(j).walk;
+  const travel = (i, j, car) => (onFoot(i, j) ? walkOf(i, j) : car + walkOf(i, j));
+
   const matrix = Array.from({ length: n + 1 }, (_, i) =>
-    Array.from({ length: n + 1 }, (_, j) => (j === 0 ? 0 : minutes(i, j).m)));
-  const back = Array.from({ length: n + 1 }, (_, i) => minutes(i, n + 1).m);
+    Array.from({ length: n + 1 }, (_, j) => (j === 0 ? 0 : i === j ? 0 : travel(i, j, minutes(i, j).m))));
+  const back = Array.from({ length: n + 1 }, (_, i) => travel(i, n + 1, minutes(i, n + 1).m));
 
   const ctx = {
     matrix,
@@ -87,7 +100,8 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
       traffic = true;
       legsMin.forEach((m, k) => {
         const a = nodes[k], b = nodes[k + 1];
-        if (b === n + 1) back[a] = m; else matrix[a][b] = m;
+        if (onFoot(a, b)) return; // ese tramo se hace andando: el tráfico no cuenta
+        if (b === n + 1) back[a] = travel(a, b, m); else matrix[a][b] = travel(a, b, m);
       });
       const again = optimize(ctx);
       best = again.order.join(',') === key ? evaluateOrder(best.order, ctx) : again;
@@ -96,10 +110,12 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
 
   let km = 0, prev = 0;
   const legs = best.legs.map((leg) => {
-    const d = minutes(prev, leg.node);
+    const foot = onFoot(prev, leg.node);
+    const d = foot ? { km: 0 } : minutes(prev, leg.node);
+    const walk = walkOf(prev, leg.node);
     km += d.km || 0;
     prev = leg.node;
-    return { id: stops[leg.node - 1].id, arrive: leg.arrive, begin: leg.begin, wait: leg.wait, late: leg.late, drive: leg.drive, km: d.km };
+    return { id: stops[leg.node - 1].id, arrive: leg.arrive, begin: leg.begin, wait: leg.wait, late: leg.late, drive: leg.drive, walk, foot, km: d.km };
   });
   if (returnToDepot && legs.length) km += minutes(prev, n + 1).km || 0;
 

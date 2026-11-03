@@ -1,10 +1,12 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
 import { computePlan } from './planner.js';
+import { proposeParking, groupKey, walkMin } from './parking.js';
+import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.6.2';
+export const VERSION = '1.7.0';
 
 // ---------- Utilidades ----------
 
@@ -43,7 +45,8 @@ function sproUrl() {
   return `intent://open#Intent;scheme=cat.bcn.bsm.spro;package=cat.bcn.bsm.spro;S.browser_fallback_url=${store};end`;
 }
 function dumChip(r, cur) {
-  if (r.dum?.id !== cur.id) return '';
+  const park = parkingOf(r, cur.id);
+  if (r.dum?.id !== cur.id && !(park && r.dum?.group === groupKey(park.ids))) return '';
   const left = Math.ceil(DUM_MINUTES - (Date.now() - r.dum.at) / 60000);
   if (left <= 0) return '<span class="chip late solid" id="dum-chip">Zona DUM: tiempo agotado</span>';
   return `<span class="chip ${left <= 5 ? 'late solid' : 'wait'}" id="dum-chip">Zona DUM: quedan ${left} min</span>`;
@@ -93,13 +96,73 @@ function dayName(iso) {
   return { rel: rel || long.split(',')[0], long };
 }
 
+// Con el horario: a un cliente estricto se le planifica con margen antes de que cierre; a uno flexible se le
+// puede llegar un poco después. En la ficha se guarda su horario de verdad.
+const TIMING = [['strict', 'Estricto'], ['', 'Normal'], ['flex', 'Flexible']];
+const STRICT_MARGIN = 10, FLEX_EXTRA = 30;
+function planWindows(x) {
+  const ws = x.windows || [];
+  if (x.timing === 'strict') return ws.map(([a, b]) => [a, Math.max(a + 10, b - STRICT_MARGIN)]);
+  if (x.timing === 'flex') return ws.map(([a, b]) => [a, Math.min(b + FLEX_EXTRA, 23 * 60 + 59)]);
+  return ws;
+}
+const planStop = (x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: x.service });
+function timingChip(x) {
+  if (x.timing === 'strict') return '<span class="chip strict">Estricto</span>';
+  if (x.timing === 'flex') return '<span class="chip any">Flexible</span>';
+  return '';
+}
+
+// Zonas de carga y descarga de Barcelona (Open Data BCN): se cargan una vez al abrir la app.
+let DUM_ZONES = [];
+fetch('data/dum-bcn.json').then((res) => res.json()).then((d) => {
+  DUM_ZONES = Array.isArray(d?.zones) ? d.zones : [];
+  if (ui.tab === 'route' && !ui.sheet) render();
+}).catch(() => { /* sin zonas: se propone el punto medio */ });
+
+// Aparcamientos aceptados con al menos dos paradas ubicadas de la ruta.
+function parkingFor(r) {
+  const here = new Set(r.stops.filter(located).map((x) => x.id));
+  return (r.parking || []).map((p) => ({ ...p, ids: p.ids.filter((id) => here.has(id)) })).filter((p) => p.ids.length >= 2);
+}
+const parkingOf = (r, id) => parkingFor(r).find((p) => p.ids.includes(id)) || null;
+const mapUrl = (p) => `https://www.google.com/maps/search/?api=1&query=${Number(p.lat)},${Number(p.lon)}`;
+const walkUrl = (p) => `https://www.google.com/maps/dir/?api=1&destination=${Number(p.lat)},${Number(p.lon)}&travelmode=walking`;
+
+function parkingProposals(r) {
+  if (!r.plan || isDirty(r) || r.status === 'active') return [];
+  const taken = new Set(parkingFor(r).flatMap((p) => p.ids));
+  const stops = r.stops.filter((x) => !x.done && located(x)).map(planStop);
+  const legs = new Map(r.plan.legs.map((l) => [l.id, l]));
+  return proposeParking({ order: r.plan.order, stops, legs, zones: DUM_ZONES, taken, rejected: r.parkingNo || {} });
+}
+
+function parkingCard(r, p) {
+  const names = p.ids.map((id) => r.stops.find((x) => x.id === id)?.name || '');
+  const where = p.spot.dum ? `en la zona de carga y descarga de <b>${esc(p.spot.label)}</b>` : 'en <b>el punto medio</b> (no hay zona de carga y descarga cerca)';
+  const gain = p.saved > 1 ? `Unos ${p.saved} min menos que moviendo la furgoneta.`
+    : p.saved < -1 ? `Unos ${-p.saved} min más que moviendo la furgoneta, pero aparcas una sola vez.` : 'El mismo tiempo, pero aparcas una sola vez.';
+  return `<div class="card park">
+    <div class="park-head">${I.pin}<b>Aparcar una vez para ${names.length} entregas</b></div>
+    <div class="small">Deja la furgoneta ${where} y ve a pie: ${names.map((n, i) => `${esc(n)} <span class="muted">(${p.walks[i]} min)</span>`).join(', ')}.</div>
+    <div class="small muted" style="margin-top:6px">Aparcado unos ${p.parked} min${p.spot.dum ? ` de los ${DUM_MINUTES} que deja SPRO` : ''}. ${gain}</div>
+    <div class="park-actions">
+      <button class="btn gold" data-action="park-yes" data-key="${esc(p.key)}">${I.check}Aceptar</button>
+      <button class="btn ghost" data-action="park-other" data-key="${esc(p.key)}">No, otro sitio</button>
+      <a class="btn line" href="${esc(mapUrl(p.spot))}" target="_blank" rel="noopener" aria-label="Ver el sitio en el mapa">${I.pin}Ver</a>
+    </div>
+    <button class="linkbtn" data-action="park-off" data-key="${esc(p.key)}">No agrupar estas entregas</button>
+  </div>`;
+}
+
 function settings() { return store.settings(); }
 function currentRoute() { return store.route(ui.date); }
 
 function signature(r) {
   return JSON.stringify([
     settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey,
-    r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, s.service]),
+    r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, s.service, s.timing || '']),
+    parkingFor(r).map((p) => [p.ids, p.lat, p.lon]),
   ]);
 }
 const isDirty = (r) => !r.plan || r.planSig !== signature(r);
@@ -167,11 +230,15 @@ function orderedStops(r) {
   return [...ordered, ...rest];
 }
 
-function stopCard(s, i, leg, extra = '') {
-  const chips = [windowsChips(s.windows)];
+function stopCard(s, i, leg, extra = '', park = null) {
+  const chips = [windowsChips(s.windows), timingChip(s)];
+  // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible).
+  const real = leg ? serviceStart(leg.arrive, s.windows).lateBy : 0;
   if (s.failed) chips.unshift(`<span class="chip late">No entregado · ${esc(s.failed)}</span>`);
-  else if (leg?.late > 0.5) chips.push(`<span class="chip late">${lateText(leg.late)}</span>`);
+  else if (real > 0.5 && !(leg?.late > 0.5)) chips.push(`<span class="chip wait">${Math.round(real)} min tarde · flexible</span>`);
+  else if (leg?.late > 0.5) chips.push(`<span class="chip late">${real > 0.5 ? lateText(real) : 'Sin margen · estricto'}</span>`);
   else if (leg?.wait > 4) chips.push(`<span class="chip wait">Espera ${Math.round(leg.wait)} min</span>`);
+  if (park && !s.done) chips.push(leg?.foot ? `<span class="chip park">A pie desde la furgoneta</span>` : `<span class="chip park">${I.pin}Aparca: ${esc(park.label || 'punto medio')}</span>`);
   if (!located(s)) chips.push('<span class="chip late">Sin ubicar</span>');
   else if (s.needsCheck && !s.done) chips.push('<span class="chip check">Revisar dirección</span>');
   const cls = ['stop', s.done ? 'done' : '', s.failed ? 'failed' : '', !located(s) ? 'unlocated' : ''].join(' ');
@@ -275,6 +342,13 @@ function renderPlanning(r) {
     html += `<div class="notice info">${I.info}<div>Calculada con ${p.source === 'tomtom' ? 'el tráfico previsto para esa hora' : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.</div></div>`;
   }
 
+  for (const p of parkingFor(r)) {
+    const names = p.ids.map((id) => r.stops.find((x) => x.id === id)?.name).filter(Boolean);
+    html += `<div class="notice gold">${I.pin}<div class="grow">Aparcas una vez ${p.dum ? `en la zona DUM de <b>${esc(p.label)}</b>` : 'en el punto medio'} para ${esc(names.join(', '))}.
+      <button class="linkbtn" data-action="park-undo" data-key="${esc(groupKey(p.ids))}" style="color:inherit">Quitar</button></div></div>`;
+  }
+  for (const p of parkingProposals(r)) if (p.spot) html += parkingCard(r, p);
+
   const unloc = r.stops.filter((x) => !located(x)).length;
   if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? 'Hay 1 parada' : `Hay ${unloc} paradas`} sin ubicar. Tócala para buscar la dirección; mientras tanto no entra en la ruta.</div></div>`;
 
@@ -286,7 +360,7 @@ function renderPlanning(r) {
 
   if (stops.length) {
     html += `<h2 class="section-title">${dirty ? 'Paradas' : 'Orden óptimo'}</h2><ol class="stops">`;
-    html += stops.map((st, i) => stopCard(st, i + 1, legs.get(st.id))).join('');
+    html += stops.map((st, i) => stopCard(st, i + 1, legs.get(st.id), '', parkingOf(r, st.id))).join('');
     html += '</ol>';
   }
 
@@ -304,6 +378,9 @@ function renderPlanning(r) {
         </div>`;
     } else {
       html += `<div class="notice gold" style="margin:0">${I.check}<div>Ruta lista. ${esc(dayName(ui.date).rel)}, 10 minutos antes de salir, abre la app y pulsa <b>Voy a salir</b>: la reconfirmo con el tráfico de ese momento.</div></div>`;
+      // Para mirarla antes: la primera parada en el navegador (o su aparcamiento, si tiene).
+      const first = stops.find((x) => !x.done && located(x));
+      if (first) html += `<a class="btn line block" style="margin-top:10px" href="${esc(navUrl(s.nav, parkingOf(r, first.id) || first))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'} a la primera: ${esc(first.name)}</a>`;
     }
     html += '</div>';
   }
@@ -338,11 +415,16 @@ function renderActive(r) {
   if (cur) {
     const leg = legs.get(cur.id);
     const ws = windowState(cur.windows, leg ? leg.arrive : nowMin());
+    const park = parkingOf(r, cur.id);
+    const parkLine = !park ? '' : leg?.foot
+      ? `<div class="notice compact info" style="margin:12px 0 0">${I.pin}<div>Desde la furgoneta, a pie: ${Math.max(1, Math.round(walkMin(park, cur)))} min.</div></div>`
+      : `<div class="notice compact gold" style="margin:12px 0 0">${I.pin}<div>Aparca ${park.dum ? `en la zona DUM de <b>${esc(park.label)}</b>` : 'en el punto medio'} y ve a pie (${Math.max(1, Math.round(walkMin(park, cur)))} min). Desde ahí haces también ${esc(park.ids.filter((id) => id !== cur.id).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done).map((x) => x.name).join(', ') || 'las demás')}.</div></div>`;
     html += `<section class="now" aria-labelledby="now-name">
       <div class="label">${finished === 0 ? 'Primera parada' : 'Siguiente parada'}</div>
       <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
       <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
-      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${windowsChips(cur.windows)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(leg.late)}</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
+      ${parkLine}
+      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${windowsChips(cur.windows)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(leg.late)}</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
         <div><b>${leg ? fmt(leg.arrive) : '--:--'}</b><span>llegada</span></div>
         <div><b>${leg ? Math.round(leg.drive) : '–'}</b><span>min de viaje</span></div>
@@ -350,7 +432,7 @@ function renderActive(r) {
       </div>
       ${cur.notes ? `<details class="notes"><summary>${I.info}<span class="clamp2">${esc(cur.notes)}</span></summary><p>${esc(cur.notes)}</p></details>` : ''}
       <div class="minor">
-        <a class="pill spro" href="${esc(sproUrl())}" data-action="spro" data-keep-default="1">${I.pin}SPRO · ${r.dum?.id === cur.id ? 'otra vez' : 'aparcar'}</a>
+        <a class="pill spro" href="${esc(sproUrl())}" data-action="spro" data-keep-default="1">${I.pin}SPRO · ${dumChip(r, cur) ? 'otra vez' : 'aparcar'}</a>
         ${cur.phone ? `<a class="pill" href="tel:${esc(cur.phone.replace(/[^\d+]/g, ''))}">${I.phone}Llamar</a>` : ''}
         ${pendingCount > 1 ? '<button class="pill" data-action="postpone">Dejar para luego</button>' : ''}
         <button class="pill" data-action="edit-stop" data-id="${esc(cur.id)}">Editar</button>
@@ -360,7 +442,7 @@ function renderActive(r) {
 
   const upcoming = (r.plan?.order || []).filter((id) => id !== r.current).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done);
   if (upcoming.length) {
-    html += `<h2 class="section-title">Después</h2><ol class="stops">${upcoming.map((x, i) => stopCard(x, finished + i + 2, legs.get(x.id))).join('')}</ol>`;
+    html += `<h2 class="section-title">Después</h2><ol class="stops">${upcoming.map((x, i) => stopCard(x, finished + i + 2, legs.get(x.id), '', parkingOf(r, x.id))).join('')}</ol>`;
   }
   html += finishedList(r);
   html += `<div style="text-align:center;margin-top:18px"><button class="linkbtn" data-action="stop-route">Volver a planificar</button></div>`;
@@ -383,7 +465,12 @@ function renderActionBar() {
   if (!cur) return '';
   const s = settings();
   const last = r.stops.filter((x) => !x.done).length === 1;
-  return `<a class="btn gold big" href="${esc(navUrl(s.nav, cur))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>
+  const leg = (r.plan?.legs || []).find((l) => l.id === cur.id);
+  const park = parkingOf(r, cur.id);
+  const go = park && leg?.foot
+    ? `<a class="btn gold big" href="${esc(walkUrl(cur))}" target="_blank" rel="noopener">${I.nav}A pie</a>`
+    : `<a class="btn gold big" href="${esc(navUrl(s.nav, park || cur))}" target="_blank" rel="noopener">${I.nav}${s.nav === 'gmaps' ? 'Maps' : 'Waze'}</a>`;
+  return `${go}
     ${ui.busy ? `<button class="btn forest big" disabled><span class="spin"></span>${esc(ui.busy)}</button>`
       : `<button class="btn forest big" data-action="next">${last ? `${I.check}Terminar` : `${I.right}Siguiente`}</button>`}`;
 }
@@ -431,7 +518,7 @@ function renderClients() {
   html += list.map((c) => `<button class="client" data-action="edit-client" data-key="${esc(c.key)}">
       <span class="row between"><span class="name ellipsis">${esc(c.name)}</span>${c.visits ? `<span class="tiny faint">${esc(plural(c.visits, 'visita', 'visitas'))}</span>` : ''}</span>
       <span class="addr ellipsis">${esc(c.label || c.address || 'Sin dirección')}</span>
-      <span class="chips">${windowsChips(c.windows)}${c.serviceLearned ? `<span class="chip any">Descarga ~${esc(c.service)} min</span>` : ''}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
+      <span class="chips">${windowsChips(c.windows)}${timingChip(c)}${c.serviceLearned ? `<span class="chip any">Descarga ~${esc(c.service)} min</span>` : ''}${c.needsCheck ? '<span class="chip check">Revisar dirección</span>' : ''}</span>
     </button>`).join('');
   return html;
 }
@@ -500,7 +587,8 @@ function renderSettings() {
     Direcciones: © <a href="https://www.icgc.cat/" target="_blank" rel="noopener">ICGC</a> (CC BY 4.0) ·
     <a href="https://www.cartociudad.es/" target="_blank" rel="noopener">CartoCiudad</a> © IGN (CC BY 4.0) ·
     © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a><br>
-    Rutas: © <a href="https://openrouteservice.org/" target="_blank" rel="noopener">openrouteservice</a> by HeiGIT${s.tomtomKey ? ' · Tráfico: © TomTom' : ''}</div>`;
+    Rutas: © <a href="https://openrouteservice.org/" target="_blank" rel="noopener">openrouteservice</a> by HeiGIT${s.tomtomKey ? ' · Tráfico: © TomTom' : ''}<br>
+    Zonas de carga y descarga: © <a href="https://opendata-ajuntament.barcelona.cat/data/dataset/zones-carrega-descarrega" target="_blank" rel="noopener">Ajuntament de Barcelona, Open Data BCN</a> (CC BY 4.0)</div>`;
 }
 
 // ---------- Hojas (formularios) ----------
@@ -617,6 +705,13 @@ function sheetStop(sh) {
       <button data-action="add-window" data-a="16:00" data-b="19:00">+ 16:00–19:00</button>
       <button data-action="add-window" data-other="1" data-a="08:00" data-b="12:00">+ Otra franja</button>
     </div>
+
+    <div class="field" style="margin:14px 0 8px"><span class="small muted" style="font-weight:500" id="timing-label">Con el horario</span></div>
+    <div class="seg timing" role="group" aria-labelledby="timing-label">
+      ${TIMING.map(([v, l]) => `<button data-action="timing" data-v="${v}" class="${(d.timing || '') === v ? 'on' : ''}" aria-pressed="${(d.timing || '') === v}">${l}</button>`).join('')}
+    </div>
+    <div class="hint">${d.timing === 'strict' ? `Planifico para llegar al menos ${STRICT_MARGIN} min antes de que cierre.`
+      : d.timing === 'flex' ? `Si hace falta, puedo llegar hasta ${FLEX_EXTRA} min después de su horario.` : 'Dentro de su horario, sin margen extra.'}</div>
 
     <div class="input-row">
       <label class="field" style="flex:1"><span>Descarga (min)</span><input class="input" type="number" inputmode="numeric" id="f-service" value="${esc(d.service ?? settings().service)}" min="1" max="120"></label>
@@ -736,6 +831,7 @@ function stopDraft(src = {}) {
     label: src.label || '',
     windows: (src.windows || []).map((w) => [...w]),
     service: src.service ?? settings().service,
+    timing: src.timing || '',
     phone: src.phone || '', notes: src.notes || '',
     needsCheck: !!src.needsCheck,
   };
@@ -786,6 +882,7 @@ function fillFromMemory() {
   if (!d.address) Object.assign(d, { address: mem.address, lat: located(mem) ? mem.lat : null, lon: located(mem) ? mem.lon : null, label: mem.label || '', needsCheck: !!mem.needsCheck });
   if (!d.windows.length && mem.windows?.length) d.windows = mem.windows.map((w) => [...w]);
   d.service = mem.service ?? d.service;
+  d.timing = d.timing || mem.timing || '';
   d.phone = d.phone || mem.phone || '';
   d.notes = d.notes || mem.notes || '';
   d.name = mem.name;
@@ -798,7 +895,7 @@ function stopFields(d) {
   return {
     name: d.name, address: d.address,
     lat: loc ? d.lat : null, lon: loc ? d.lon : null, label: loc ? d.label || '' : '',
-    windows: d.windows, service: d.service, phone: d.phone, notes: d.notes,
+    windows: d.windows, service: d.service, timing: d.timing || '', phone: d.phone, notes: d.notes,
     needsCheck: loc ? !!d.needsCheck : false,
   };
 }
@@ -854,7 +951,7 @@ async function saveStop() {
 // ---------- Planificar ----------
 
 function routeStopsForPlan(r) {
-  return r.stops.filter((s) => !s.done && located(s)).map((s) => ({ id: s.id, lat: s.lat, lon: s.lon, windows: s.windows, service: s.service }));
+  return r.stops.filter((s) => !s.done && located(s)).map(planStop);
 }
 
 async function optimize() {
@@ -869,7 +966,7 @@ async function optimize() {
   ui.busy = s.tomtomKey && s.orsKey ? 'Calculando con el tráfico previsto…' : 'Calculando la mejor ruta…';
   render();
   try {
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: false, pairs: {}, returnToDepot: s.returnToDepot });
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: false, pairs: {}, returnToDepot: s.returnToDepot, parking: parkingFor(r) });
     r.pairs = plan.pairs; delete plan.pairs;
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
@@ -898,7 +995,7 @@ async function leave() {
   try {
     // Los tiempos entre paradas calculados al planificar siguen valiendo; lo que se mira en vivo
     // es la salida desde el almacén. Si se planificó hace más de un día, se recalcula todo.
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true, pairs: r.pairs || {}, maxAgeMin: 24 * 60, returnToDepot: s.returnToDepot });
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true, pairs: r.pairs || {}, maxAgeMin: 24 * 60, returnToDepot: s.returnToDepot, parking: parkingFor(r) });
     r.pairs = plan.pairs; delete plan.pairs;
     const changed = before && before.order.join() !== plan.order.join();
     r.lastChange = plan.warning
@@ -943,11 +1040,14 @@ async function replanActive(msg) {
   const active = pending.filter((p) => !postponed.has(p.id));
   const lastDone = r.stops.filter((x) => x.done).sort((a, b) => b.doneAt - a.doneAt)[0];
   const from = gps && gps.accuracy < 1000 ? gps : lastDone && located(lastDone) ? lastDone : s.depot;
+  // Si la última entrega era de un aparcamiento que aún tiene entregas, la furgoneta sigue allí: se sale a pie.
+  const parking = parkingFor(r);
+  const g = lastDone ? parking.findIndex((p) => p.ids.includes(lastDone.id)) : -1;
+  const parkedAt = g >= 0 && parking[g].ids.some((id) => active.some((a) => a.id === id)) ? g : null;
   try {
     const plan = await computePlan({
       from, depot: s.depot, startMin: nowMin(), departAt: new Date(), orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true,
-      stops: active.map((x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: x.windows, service: x.service })),
-      pairs: r.pairs || {}, returnToDepot: s.returnToDepot,
+      stops: active.map(planStop), pairs: r.pairs || {}, returnToDepot: s.returnToDepot, parking, parkedAt,
     });
     r.pairs = plan.pairs; delete plan.pairs;
     plan.order.push(...r.postponed.filter((id) => postponed.has(id)));
@@ -998,7 +1098,10 @@ async function finishCurrent() {
   if (mem) store.rememberClient({ name: mem.name, visits: (mem.visits || 0) + 1, lastVisit: ui.date });
   learnFrom(cur);
   delete cur.trip;
-  if (r.dum?.id === cur.id) r.dum = null;
+  // Con un aparcamiento, la validación de SPRO sigue valiendo mientras quede alguna entrega suya.
+  const park = parkingOf(r, cur.id);
+  const staying = park && r.dum?.group === groupKey(park.ids) && park.ids.some((id) => r.stops.find((x) => x.id === id && !x.done));
+  if (!staying && (r.dum?.id === cur.id || r.dum?.group)) r.dum = null;
   r.postponed = (r.postponed || []).filter((id) => id !== cur.id);
   store.save();
   await replanActive(null);
@@ -1027,7 +1130,7 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo']);
+const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-yes', 'park-other', 'park-off', 'park-undo']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
@@ -1138,9 +1241,46 @@ const actions = {
   spro: () => {
     const r = currentRoute();
     // Se redibuja después: si el enlace desaparece antes de abrirse, Android no llega a abrir SPRO.
-    if (r.current) { r.dum = { id: r.current, at: Date.now() }; store.save(); setTimeout(render, 600); }
+    if (r.current) {
+      const park = parkingOf(r, r.current);
+      r.dum = { id: r.current, at: Date.now(), group: park ? groupKey(park.ids) : undefined };
+      store.save(); setTimeout(render, 600);
+    }
   },
   'apply-update': () => applyUpdate(),
+  timing: (el) => { syncDraft(); ui.sheet.draft.timing = el.dataset.v; renderSheet(); },
+  'park-yes': (el) => {
+    const r = currentRoute();
+    const p = parkingProposals(r).find((x) => x.key === el.dataset.key);
+    if (!p?.spot) return render();
+    r.parking = [...(r.parking || []), { ids: p.ids, lat: p.spot.lat, lon: p.spot.lon, label: p.spot.label, dum: p.spot.dum }];
+    store.save();
+    optimize();
+  },
+  'park-other': (el) => {
+    const r = currentRoute();
+    const key = el.dataset.key;
+    const p = parkingProposals(r).find((x) => x.key === key);
+    if (!p?.spot) return render();
+    r.parkingNo = { ...(r.parkingNo || {}), [key]: [...(Array.isArray(r.parkingNo?.[key]) ? r.parkingNo[key] : []), { lat: p.spot.lat, lon: p.spot.lon }] };
+    const next = parkingProposals(r).find((x) => x.key === key);
+    if (!next?.spot) { r.parkingNo[key] = 'off'; toast('No hay más sitios a mano para esas entregas'); }
+    store.save();
+    render();
+  },
+  'park-off': (el) => {
+    const r = currentRoute();
+    r.parkingNo = { ...(r.parkingNo || {}), [el.dataset.key]: 'off' };
+    store.save();
+    render();
+  },
+  'park-undo': (el) => {
+    const r = currentRoute();
+    r.parking = (r.parking || []).filter((p) => groupKey(p.ids) !== el.dataset.key);
+    r.parkingNo = { ...(r.parkingNo || {}), [el.dataset.key]: 'off' };
+    store.save();
+    if (r.status === 'active') replanActive('Aparcamiento quitado'); else optimize();
+  },
 };
 
 async function pasteAdd() {

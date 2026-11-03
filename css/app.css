@@ -366,3 +366,18 @@ body.has-actionbar .toast { bottom: calc(170px + var(--safe-b)); }
 .steps li.ok .n { background: var(--forest-2); border-color: transparent; color: #fff; }
 .steps li.ok > .grow > b { color: var(--muted); }
 .steps .grow > b { display: block; margin-bottom: 2px; }
+
+/* Horario estricto / flexible */
+.chip.strict { background: transparent; color: var(--late); border: 1px solid rgba(226, 114, 91, 0.4); }
+.seg.timing { display: flex; }
+.seg.timing button { flex: 1; }
+
+/* Aparcar una vez para varias entregas */
+.chip.park { background: rgba(201, 165, 76, 0.12); color: var(--gold-2); }
+.chip.park svg { width: 13px; height: 13px; }
+.card.park { padding: 14px 16px; margin: 12px 0; border: 1px solid var(--line); }
+.park-head { display: flex; align-items: center; gap: 8px; color: var(--gold-2); margin-bottom: 6px; }
+.park-head svg { width: 18px; height: 18px; flex: none; }
+.park-actions { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin: 12px 0 4px; }
+.park-actions .btn { min-height: 44px; padding: 0 12px; }
+.park-actions svg { width: 16px; height: 16px; }

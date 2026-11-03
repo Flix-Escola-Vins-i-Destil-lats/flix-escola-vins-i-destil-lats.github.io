@@ -123,6 +123,8 @@ export function sanitizeClient(c) {
     service: int(c.service, 1, 180, 10),
     phone: str(c.phone, 40),
     notes: str(c.notes, 500),
+    // Con el horario: 'strict' (no se le puede llegar tarde), 'flex' (no pasa nada por pasarse un poco) o normal.
+    timing: c.timing === 'strict' || c.timing === 'flex' ? c.timing : '',
     visits: int(c.visits, 0, 100000, 0),
     lastVisit: /^\d{4}-\d{2}-\d{2}$/.test(c.lastVisit) ? c.lastVisit : undefined,
     needsCheck: !!c.needsCheck,
