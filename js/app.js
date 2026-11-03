@@ -4,7 +4,7 @@ import { computePlan } from './planner.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.6.1';
+export const VERSION = '1.6.2';
 
 // ---------- Utilidades ----------
 

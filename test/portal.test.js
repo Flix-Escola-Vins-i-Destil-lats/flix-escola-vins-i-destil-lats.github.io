@@ -128,3 +128,12 @@ test('el horario del pedido no se ensancha con un «MAÑANA» de las observacion
   assert.deepEqual(r.stops[1].windows, W(['9', '14'])); // la mañana afina el horario del cliente
   assert.deepEqual(r.stops[2].windows, W(['16', '20'])); // si choca, manda el horario del cliente
 });
+
+test('«EN ADELANTE» en el pedido manda si la ficha del cliente abre más tarde', () => {
+  const r = parsePortal(ruta([
+    [1, 'BAR', 'C/ ARAGO, 1', 'BARCELONA', '', 'A PARTIR 18:00 HS', '09:30 EN ADELANTE', 'Obs. pedido: MIERCOLES', 1],
+    [2, 'CAFE', 'C/ ARAGO, 2', 'BARCELONA', '', '10 - 14 / 18 - 21 H', 'A PARTIR 11 HS', '', 2],
+  ]));
+  assert.deepEqual(r.stops[0].windows, W(['9:30', '21'])); // no «18-21»: el pedido es lo último que se ha dicho
+  assert.deepEqual(r.stops[1].windows, W(['11', '14'], ['18', '21'])); // si cabe en la ficha, solo afina
+});

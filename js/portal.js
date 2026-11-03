@@ -182,7 +182,12 @@ export function parsePortal(text) {
     // Las observaciones ("MARTES - MAÑANA") solo afinan: si chocan, no cuentan.
     const winsOf = (list) => mergeWindows(list.flatMap((o) => parseHorario(o, weekday).windows));
     const narrow = (base, extra, wins) => (!extra.length ? base : intersect(base, extra).length ? intersect(base, extra) : wins ? extra : base);
-    const windows = narrow(narrow(h.windows, winsOf(orders), true), winsOf(obs), false);
+    // "09:30 EN ADELANTE" en el pedido solo dice desde qué hora. Si la ficha abre más tarde ("A PARTIR 18:00"),
+    // cruzarlos tiraría lo único que dice el pedido: se contradicen y manda el pedido, que es lo último dicho.
+    const opensAt = orders.filter((o) => /\b(en adelante|a partir|desde)\b/.test(normalize(o)) && (o.match(/\d{1,2}(?:[:.]\d\d)?/g) || []).length === 1)
+      .map((o) => winsOf([o])[0]?.[0]).filter((t) => t != null);
+    const clash = opensAt.some((t) => !h.windows.some(([a, b]) => t >= a && t < b));
+    const windows = narrow(clash ? winsOf(orders) : narrow(h.windows, winsOf(orders), true), winsOf(obs), false);
     // Lo que va entre paréntesis en la dirección ("ENTRADA MERCANCIAS POR PARKING") es para el conductor,
     // y despista al buscar la dirección.
     const access = [...g.dir.matchAll(/\(([^)]*)\)?/g)].map((m) => m[1].trim()).filter(Boolean);
