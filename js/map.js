@@ -70,7 +70,9 @@ export async function openMap(api) {
     st.layers = L.layerGroup().addTo(st.map);
     st.map.on('moveend', drawZones);
   }
+  // Se encuadra cuando el mapa ya tiene su tamaño (recién abierto o tras recargar puede no tenerlo aún).
   setTimeout(() => { st.map.invalidateSize(); draw(true); }, 0);
+  setTimeout(() => { st.map.invalidateSize(); if (st.mode === 'view') fitRoute(); }, 400);
 }
 
 function close() {
@@ -131,18 +133,23 @@ function draw(fit) {
     const pm = L.marker(ll(st.spot), { icon: icon('park new', 'P', 34), draggable: true, zIndexOffset: 1000, title: 'Aparcar aquí' }).addTo(st.layers);
     pm.on('dragend', () => { const p = pm.getLatLng(); st.spot = { ...spotAt({ lat: p.lat, lon: p.lng }, d.zones), manual: true }; draw(false); });
   }
-  if (fit && bounds.length > 1) st.map.fitBounds(bounds, { padding: [36, 36], maxZoom: 17 });
-  else if (fit) st.map.setView(bounds[0] || depot, 15);
+  st.bounds = bounds.length ? bounds : [depot];
+  if (fit) fitRoute();
   drawZones();
   renderPanel();
 }
 
-// Zonas de carga y descarga a la vista (solo de cerca). En modo «dónde aparcar», tocar una la elige.
+function fitRoute() {
+  if (st.bounds.length > 1) st.map.fitBounds(st.bounds, { padding: [36, 36], maxZoom: 17 });
+  else st.map.setView(st.bounds[0], 15);
+}
+
+// Zonas de carga y descarga a la vista, solo al agrupar y de cerca. En modo «dónde aparcar», tocar una la elige.
 function drawZones() {
   const L = window.L;
   if (!st.zones || !st.data) return;
   st.zones.clearLayers();
-  if (st.map.getZoom() < ZONES_FROM_ZOOM) return;
+  if (st.mode === 'view' || st.map.getZoom() < ZONES_FROM_ZOOM) return;
   const b = st.map.getBounds();
   let n = 0;
   for (const [lat, lon, label] of st.data.zones) {
