@@ -4,7 +4,7 @@ import { computePlan } from './planner.js';
 import { parsePortal, BRIDGE_URL } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.5.0';
+export const VERSION = '1.5.1';
 
 // ---------- Utilidades ----------
 
