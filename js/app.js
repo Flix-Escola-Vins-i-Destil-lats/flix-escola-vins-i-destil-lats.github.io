@@ -1,12 +1,12 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
 import { computePlan } from './planner.js';
-import { proposeParking, groupKey, walkMin } from './parking.js';
+import { groupKey, walkMin } from './parking.js';
 import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.7.3';
+export const VERSION = '1.8.0';
 
 // ---------- Utilidades ----------
 
@@ -33,6 +33,7 @@ const I = {
   warn: '<svg viewBox="0 0 24 24"><path d="M12 4 2.5 20h19z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 10v4.5M12 17v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   x: '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
   search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m16 16 4 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  map: '<svg viewBox="0 0 24 24"><path d="M9 4 3.5 6v14L9 18l6 2 5.5-2V4L15 6 9 4Zm0 0v14m6-12v14" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
   phone: '<svg viewBox="0 0 24 24"><path d="M6.5 3.5h3l1.5 4-2 1.5a11 11 0 0 0 6 6l1.5-2 4 1.5v3a2 2 0 0 1-2 2A16 16 0 0 1 4.5 5.5a2 2 0 0 1 2-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>',
 };
 
@@ -126,33 +127,48 @@ function parkingFor(r) {
   return (r.parking || []).map((p) => ({ ...p, ids: p.ids.filter((id) => here.has(id)) })).filter((p) => p.ids.length >= 2);
 }
 const parkingOf = (r, id) => parkingFor(r).find((p) => p.ids.includes(id)) || null;
-const mapUrl = (p) => `https://www.google.com/maps/search/?api=1&query=${Number(p.lat)},${Number(p.lon)}`;
 const walkUrl = (p) => `https://www.google.com/maps/dir/?api=1&destination=${Number(p.lat)},${Number(p.lon)}&travelmode=walking`;
 
-function parkingProposals(r) {
-  if (!r.plan || isDirty(r) || r.status === 'active') return [];
-  const taken = new Set(parkingFor(r).flatMap((p) => p.ids));
-  const stops = r.stops.filter((x) => !x.done && located(x)).map(planStop);
-  const legs = new Map(r.plan.legs.map((l) => [l.id, l]));
-  return proposeParking({ order: r.plan.order, stops, legs, zones: DUM_ZONES, taken, rejected: r.parkingNo || {} });
-}
-
-function parkingCard(r, p) {
-  const names = p.ids.map((id) => r.stops.find((x) => x.id === id)?.name || '');
-  const where = p.spot.dum ? `en la zona de carga y descarga de <b>${esc(p.spot.label)}</b>` : 'en <b>el punto medio</b> (no hay zona de carga y descarga cerca)';
-  const gain = p.saved > 1 ? `Unos ${p.saved} min menos que moviendo la furgoneta.`
-    : p.saved < -1 ? `Unos ${-p.saved} min más que moviendo la furgoneta, pero aparcas una sola vez.` : 'El mismo tiempo, pero aparcas una sola vez.';
-  return `<div class="card park">
-    <div class="park-head">${I.pin}<b>Aparcar una vez para ${names.length} entregas</b></div>
-    <div class="small">Deja la furgoneta ${where} y ve a pie: ${names.map((n, i) => `${esc(n)} <span class="muted">(${p.walks[i]} min)</span>`).join(', ')}.</div>
-    <div class="small muted" style="margin-top:6px">Aparcado unos ${p.parked} min${p.spot.dum ? ` de los ${DUM_MINUTES} que deja SPRO` : ''}. ${gain}</div>
-    <div class="park-actions">
-      <button class="btn gold" data-action="park-yes" data-key="${esc(p.key)}">${I.check}Aceptar</button>
-      <button class="btn ghost" data-action="park-other" data-key="${esc(p.key)}">No, otro sitio</button>
-      <a class="btn line" href="${esc(mapUrl(p.spot))}" target="_blank" rel="noopener" aria-label="Ver el sitio en el mapa">${I.pin}Ver</a>
-    </div>
-    <button class="linkbtn" data-action="park-off" data-key="${esc(p.key)}">No agrupar estas entregas</button>
-  </div>`;
+// Para el mapa: paradas ubicadas en el orden de la ruta (en ruta, primero las hechas), con su tramo del plan.
+function mapApi() {
+  return {
+    data() {
+      const r = currentRoute(), s = settings();
+      const planned = !isDirty(r) && !!r.plan;
+      const legs = planned ? new Map(r.plan.legs.map((l) => [l.id, l])) : new Map();
+      const seq = r.status === 'active'
+        ? [...r.stops.filter((x) => x.done).sort((a, b) => a.doneAt - b.doneAt),
+          ...(r.plan?.order || []).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done)]
+        : orderedStops(r);
+      const park = parkingFor(r);
+      return {
+        depot: s.depot, returnToDepot: s.returnToDepot, planned, nav: s.nav, zones: DUM_ZONES,
+        current: r.status === 'active' ? r.current : null,
+        unlocated: r.stops.filter((x) => !located(x)).length,
+        stops: seq.filter(located).map((x) => ({
+          id: x.id, name: x.name || x.address, label: x.label || x.address, lat: x.lat, lon: x.lon,
+          windows: x.windows, planWindows: planWindows(x), service: x.service, done: !!x.done, leg: legs.get(x.id) || null,
+          nav: navUrl(s.nav, park.find((p) => p.ids.includes(x.id)) || x),
+        })),
+        parking: park.map((p) => ({ ...p, key: groupKey(p.ids) })),
+      };
+    },
+    // Las entregas elegidas salen de cualquier otro aparcamiento en el que estuvieran.
+    async accept(ids, spot) {
+      const r = currentRoute();
+      const rest = (r.parking || []).map((p) => ({ ...p, ids: p.ids.filter((id) => !ids.includes(id)) })).filter((p) => p.ids.length >= 2);
+      r.parking = [...rest, { ids, lat: spot.lat, lon: spot.lon, label: spot.label || '', dum: !!spot.dum }];
+      store.save();
+      if (r.status === 'active') await replanActive('Aparcamiento añadido'); else await optimize();
+    },
+    async remove(key) {
+      const r = currentRoute();
+      r.parking = (r.parking || []).filter((p) => groupKey(p.ids) !== key);
+      store.save();
+      if (r.status === 'active') await replanActive('Aparcamiento quitado'); else await optimize();
+    },
+    closed() { render(); },
+  };
 }
 
 function settings() { return store.settings(); }
@@ -347,7 +363,6 @@ function renderPlanning(r) {
     html += `<div class="notice gold">${I.pin}<div class="grow">Aparcas una vez ${p.dum ? `en la zona DUM de <b>${esc(p.label)}</b>` : 'en el punto medio'} para ${esc(names.join(', '))}.
       <button class="linkbtn" data-action="park-undo" data-key="${esc(groupKey(p.ids))}" style="color:inherit">Quitar</button></div></div>`;
   }
-  for (const p of parkingProposals(r)) if (p.spot) html += parkingCard(r, p);
 
   const unloc = r.stops.filter((x) => !located(x)).length;
   if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? 'Hay 1 parada' : `Hay ${unloc} paradas`} sin ubicar. Tócala para buscar la dirección; mientras tanto no entra en la ruta.</div></div>`;
@@ -359,7 +374,8 @@ function renderPlanning(r) {
   </div>`;
 
   if (stops.length) {
-    html += `<h2 class="section-title">${dirty ? 'Paradas' : 'Orden óptimo'}</h2><ol class="stops">`;
+    html += `<div class="section-head"><h2 class="section-title">${dirty ? 'Paradas' : 'Orden óptimo'}</h2>
+      <button class="btn line small" data-action="open-map">${I.map}Mapa</button></div><ol class="stops">`;
     html += stops.map((st, i) => stopCard(st, i + 1, legs.get(st.id), '', parkingOf(r, st.id))).join('');
     html += '</ol>';
   }
@@ -442,7 +458,8 @@ function renderActive(r) {
 
   const upcoming = (r.plan?.order || []).filter((id) => id !== r.current).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done);
   if (upcoming.length) {
-    html += `<h2 class="section-title">Después</h2><ol class="stops">${upcoming.map((x, i) => stopCard(x, finished + i + 2, legs.get(x.id), '', parkingOf(r, x.id))).join('')}</ol>`;
+    html += `<div class="section-head"><h2 class="section-title">Después</h2>
+      <button class="btn line small" data-action="open-map">${I.map}Mapa</button></div><ol class="stops">${upcoming.map((x, i) => stopCard(x, finished + i + 2, legs.get(x.id), '', parkingOf(r, x.id))).join('')}</ol>`;
   }
   html += finishedList(r);
   html += `<div style="text-align:center;margin-top:18px"><button class="linkbtn" data-action="stop-route">Volver a planificar</button></div>`;
@@ -588,6 +605,7 @@ function renderSettings() {
     <a href="https://www.cartociudad.es/" target="_blank" rel="noopener">CartoCiudad</a> © IGN (CC BY 4.0) ·
     © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">colaboradores de OpenStreetMap</a><br>
     Rutas: © <a href="https://openrouteservice.org/" target="_blank" rel="noopener">openrouteservice</a> by HeiGIT${s.tomtomKey ? ' · Tráfico: © TomTom' : ''}<br>
+    Mapa: © <a href="https://www.icgc.cat/" target="_blank" rel="noopener">ICGC</a> (CC BY 4.0) · <a href="https://leafletjs.com" target="_blank" rel="noopener">Leaflet</a><br>
     Zonas de carga y descarga: © <a href="https://opendata-ajuntament.barcelona.cat/data/dataset/zones-carrega-descarrega" target="_blank" rel="noopener">Ajuntament de Barcelona, Open Data BCN</a> (CC BY 4.0)</div>`;
 }
 
@@ -1130,7 +1148,7 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-yes', 'park-other', 'park-off', 'park-undo']);
+const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'leave', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
@@ -1249,38 +1267,13 @@ const actions = {
   },
   'apply-update': () => applyUpdate(),
   timing: (el) => { syncDraft(); ui.sheet.draft.timing = el.dataset.v; renderSheet(); },
-  'park-yes': (el) => {
-    const r = currentRoute();
-    const p = parkingProposals(r).find((x) => x.key === el.dataset.key);
-    if (!p?.spot) return render();
-    r.parking = [...(r.parking || []), { ids: p.ids, lat: p.spot.lat, lon: p.spot.lon, label: p.spot.label, dum: p.spot.dum }];
-    store.save();
-    optimize();
-  },
-  'park-other': (el) => {
-    const r = currentRoute();
-    const key = el.dataset.key;
-    const p = parkingProposals(r).find((x) => x.key === key);
-    if (!p?.spot) return render();
-    r.parkingNo = { ...(r.parkingNo || {}), [key]: [...(Array.isArray(r.parkingNo?.[key]) ? r.parkingNo[key] : []), { lat: p.spot.lat, lon: p.spot.lon }] };
-    const next = parkingProposals(r).find((x) => x.key === key);
-    if (!next?.spot) { r.parkingNo[key] = 'off'; toast('No hay más sitios a mano para esas entregas'); }
-    store.save();
-    render();
-  },
-  'park-off': (el) => {
-    const r = currentRoute();
-    r.parkingNo = { ...(r.parkingNo || {}), [el.dataset.key]: 'off' };
-    store.save();
-    render();
-  },
   'park-undo': (el) => {
     const r = currentRoute();
     r.parking = (r.parking || []).filter((p) => groupKey(p.ids) !== el.dataset.key);
-    r.parkingNo = { ...(r.parkingNo || {}), [el.dataset.key]: 'off' };
     store.save();
     if (r.status === 'active') replanActive('Aparcamiento quitado'); else optimize();
   },
+  'open-map': () => import('./map.js').then((m) => m.openMap(mapApi())).catch(() => toast('No se ha podido abrir el mapa')),
 };
 
 async function pasteAdd() {
