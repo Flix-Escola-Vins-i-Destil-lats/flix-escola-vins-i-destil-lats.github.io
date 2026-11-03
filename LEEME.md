@@ -4,7 +4,7 @@ App web para el móvil (se instala como una app normal) que ordena la ruta de re
 
 ## Cómo se usa
 
-1. **El día antes**: pega la lista del portal (o añade las paradas a mano) y pulsa **Optimizar ruta**.
+1. **El día antes** (la ruta sale en el portal sobre las 17:30): en el portal, toca el marcador **Pasar a Ruta** y compártela con la app; llega con direcciones, teléfonos y horarios (cómo crear el marcador: Ajustes → Ruta del portal). También puedes pegar una lista o añadir paradas a mano. Luego, **Optimizar ruta**.
 2. **10 minutos antes de salir**: pulsa **Voy a salir**. La app vuelve a calcular el orden con el tráfico del momento.
 3. **Abrir en Waze** te lleva a la primera parada. Al terminar cada parada pulsa **Siguiente** (la entrega se registra en la tablet; si te equivocas, **Deshacer**): recalcula desde donde estás y te da la siguiente.
 

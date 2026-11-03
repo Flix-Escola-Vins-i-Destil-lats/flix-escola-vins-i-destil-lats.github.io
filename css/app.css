@@ -364,5 +364,5 @@ body.has-actionbar .toast { bottom: calc(170px + var(--safe-b)); }
 .steps .n { flex: none; width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; border: 1px solid var(--line); color: var(--gold-2); font: 600 17px/1 var(--serif); }
 .steps .n svg { width: 16px; height: 16px; }
 .steps li.ok .n { background: var(--forest-2); border-color: transparent; color: #fff; }
-.steps li.ok b { color: var(--muted); }
-.steps b { display: block; margin-bottom: 2px; }
+.steps li.ok > .grow > b { color: var(--muted); }
+.steps .grow > b { display: block; margin-bottom: 2px; }

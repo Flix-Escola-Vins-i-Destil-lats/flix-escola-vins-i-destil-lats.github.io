@@ -86,7 +86,23 @@ const STREET_STOP = new Set(['carrer', 'calle', 'avinguda', 'avenida', 'passeig'
 function streetWords(q) {
   return fold(String(q).split(',')[0]).split(' ').filter((w) => w.length > 2 && !/\d/.test(w) && !STREET_STOP.has(w));
 }
-const sameStreet = (words, label) => { const l = fold(label); return words.every((w) => l.includes(w)); };
+// Nombre en castellano frente al catalán del mapa: "aragon"/"arago", "corcega"/"corsega", "valencia"/"valencia".
+function nearWord(w, l) {
+  if (w.length < 5 || l.slice(0, 2) !== w.slice(0, 2) || Math.abs(w.length - l.length) > 2) return false;
+  if (w.startsWith(l) || l.startsWith(w)) return true;
+  let prev = Array.from({ length: l.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= w.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= l.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (w[i - 1] === l[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[l.length] <= 1;
+}
+const sameStreet = (words, label) => {
+  const l = fold(label);
+  const lw = l.split(/[^a-z0-9]+/);
+  return words.every((w) => l.includes(w) || lw.some((x) => nearWord(w, x)));
+};
 
 async function icgc(q) {
   const url = `https://eines.icgc.cat/geocodificador/cerca?text=${encodeURIComponent(q)}&layers=address&size=5` +

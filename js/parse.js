@@ -32,22 +32,24 @@ const T2 = String.raw`(?<![\d.:])\d{1,2}(?:\s*[:.h']\s*\d{2})?(?!\d)\s*h?`; // l
 const PREFIX = String.raw`(de\s+(?:les\s+|las\s+)?|desde\s+(?:las\s+|les\s+)?|horari[o]?:?\s*|entrega:?\s*)?`;
 const SEP = String.raw`\s*(?:-|–|—|\/|a\s+les|a\s+las|a|hasta\s+(?:las\s+|les\s+)?|fins\s+a(?:\s+les)?)\s*`;
 const RANGE = () => new RegExp(`${PREFIX}(${T})${SEP}(${T2})(?![\\w:])`, 'gi');
-const FROM = () => /(?:a\s+partir\s+de\s+(?:las\s+|les\s+)?|desde\s+(?:las\s+|les\s+)?)(\d{1,2}(?:[:.h']\d{2})?\s*h?)(?![\d:])/gi;
-const UNTIL = () => /(?:antes\s+de\s+(?:las\s+|les\s+)?|hasta\s+(?:las\s+|les\s+)?|abans\s+de\s+les\s+)(\d{1,2}(?:[:.h']\d{2})?\s*h?)(?![\d:])/gi;
+const FROM = () => /(?:a\s+partir\s+(?:de\s+)?(?:las\s+|les\s+)?|desde\s+(?:las\s+|les\s+)?)(\d{1,2}(?:[:.h']\d{2})?\s*h?)(?![\d:])/gi;
+const FROM_AFTER = () => /(?<![\d:.])(\d{1,2}(?:[:.h']\d{2})?)\s*(?:h|hs|horas)?\.?\s+en\s+adelante/gi; // "14:00 HS. EN ADELANTE"
+const UNTIL = () => /(?:antes\s+(?:de\s+)?(?:las\s+|les\s+)?|hasta\s+(?:las\s+|les\s+)?|abans\s+de\s+les\s+)(\d{1,2}(?:[:.h']\d{2})?\s*h?)(?![\d:])/gi;
 
 // "de 4 a 7" sin más: en un horario de entrega es por la tarde.
 function afternoon(a, b) {
   return a >= 60 && b <= 7 * 60 ? [a + 720, b + 720] : [a, b];
 }
 
-function rangeMatches(text) {
+function rangeMatches(text, loose = false) {
   const out = [];
   const s = String(text || ''), re = RANGE();
   let m;
   while ((m = re.exec(s))) {
     const [all, prefix, a, b] = m;
-    // Un "9-11" a secas no cuenta: en una dirección suele ser un número de portal.
-    const explicit = prefix || /[:.h']/.test(a) || /[:.h']/.test(b) || /\s(a|hasta|fins)\s/i.test(all);
+    // Un "9-11" a secas no cuenta (en una dirección suele ser un número de portal), salvo en un
+    // campo que solo puede ser un horario (loose).
+    const explicit = loose || prefix || /[:.h']/.test(a) || /[:.h']/.test(b) || /\s(a|hasta|fins)\s/i.test(all);
     let from = toMin(a), to = toMin(b);
     if (explicit && from != null && to != null) [from, to] = afternoon(from, to);
     // Candidato descartado ("12 - 9:00" = portal + hora): se sigue buscando desde el carácter siguiente.
@@ -57,7 +59,7 @@ function rangeMatches(text) {
   return out;
 }
 
-function mergeWindows(ws) {
+export function mergeWindows(ws) {
   const sorted = ws.slice().sort((x, y) => x[0] - y[0]);
   const out = [];
   for (const w of sorted) {
@@ -69,13 +71,13 @@ function mergeWindows(ws) {
 }
 
 // Devuelve [[desde, hasta], ...] en minutos, sin solapes.
-export function parseWindows(text) {
+export function parseWindows(text, { loose = false } = {}) {
   const s = String(text || '');
-  const ranges = rangeMatches(s);
+  const ranges = rangeMatches(s, loose);
   const out = ranges.map((r) => r.win);
   let rest = s;
   for (const r of ranges.slice().reverse()) rest = rest.slice(0, r.index) + ' '.repeat(r.length) + rest.slice(r.index + r.length);
-  for (const m of rest.matchAll(FROM())) { const a = toMin(m[1]); if (a != null && a < 21 * 60) out.push([a, 21 * 60]); }
+  for (const m of [...rest.matchAll(FROM()), ...rest.matchAll(FROM_AFTER())]) { const a = toMin(m[1]); if (a != null && a < 21 * 60) out.push([a, 21 * 60]); }
   for (const m of rest.matchAll(UNTIL())) { const b = toMin(m[1]); if (b != null && b > 6 * 60) out.push([6 * 60, b]); }
   return mergeWindows(out);
 }
@@ -84,7 +86,7 @@ export function parseWindows(text) {
 export function stripWindows(text) {
   let s = String(text || '');
   for (const r of rangeMatches(s).reverse()) s = s.slice(0, r.index) + s.slice(r.index + r.length);
-  s = s.replace(FROM(), '').replace(UNTIL(), '');
+  s = s.replace(FROM(), '').replace(FROM_AFTER(), '').replace(UNTIL(), '');
   return s.replace(/\b(horari[o]?|entrega)\b\s*:?/gi, '').replace(/[  ]{2,}/g, ' ').trim();
 }
 

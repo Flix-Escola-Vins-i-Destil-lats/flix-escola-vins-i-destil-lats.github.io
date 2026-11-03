@@ -1,9 +1,10 @@
 import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
 import { computePlan } from './planner.js';
+import { parsePortal, BRIDGE_URL } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.4.1';
+export const VERSION = '1.5.0';
 
 // ---------- Utilidades ----------
 
@@ -477,6 +478,17 @@ function renderSettings() {
     <button class="btn line" data-action="change-depot">Cambiar</button></div>
   </div>
 
+  <h2 class="section-title">Ruta del portal</h2>
+  <div class="card">
+    <div class="small muted">La ruta de mañana sale en el portal sobre las 17:30. Con el marcador «Pasar a Ruta» la traes con nombres, direcciones, teléfonos y horarios, sin copiar nada a mano.</div>
+    <ol class="steps" style="margin-top:12px">
+      <li><span class="n">1</span><div class="grow"><b>Copia el marcador</b>
+        <button class="btn line block" data-action="copy-bridge" style="margin-top:8px">Copiar «Pasar a Ruta»</button></div></li>
+      <li><span class="n">2</span><div class="grow"><b>Guárdalo en el navegador</b><div class="small muted">En Edge o Chrome del móvil, abre el portal e inicia sesión. Añádelo a favoritos (☆), edita ese favorito: nombre <b>Pasar a Ruta</b> y, en la dirección, borra lo que hay y pega lo copiado.</div></div></li>
+      <li><span class="n">3</span><div class="grow"><b>Cada tarde</b><div class="small muted">Con el portal abierto, escribe <b>Pasar a Ruta</b> en la barra de direcciones y toca el favorito (el de la estrella). Toca la ruta y, al compartir, elige <b>Ruta</b>.</div></div></li>
+    </ol>
+  </div>
+
   <h2 class="section-title">Copias y compañeros</h2>
   <div class="card">
     <div class="small muted" style="margin-bottom:12px"><b>Copia de seguridad:</b> guarda clientes, horarios y rutas (sin tus claves) en Drive o en un mensaje a ti mismo. ${backupAge()}</div>
@@ -641,6 +653,7 @@ function serviceHint(sh) {
 }
 
 function sheetPaste(sh) {
+  if (sh.portal) return sheetPortal(sh);
   const items = sh.parsed;
   return `<h2 id="sheet-title">Pegar lista</h2>
     <div class="small muted" style="margin:-6px 0 12px" id="paste-help">Copia las paradas del portal, de un mensaje o escríbelas tú: una por línea, o separadas por una línea en blanco. Si pones horarios (9:00-11:30, de 10 a 13h…) los leo.</div>
@@ -655,6 +668,27 @@ function sheetPaste(sh) {
       ${sh.busy ? `<button class="btn gold big block" disabled><span class="spin"></span>${esc(sh.busy)}</button>`
         : items ? `<button class="btn gold big block" data-action="paste-add">${items.length === 1 ? 'Añadir 1 parada' : `Añadir ${items.length} paradas`}</button>`
         : '<button class="btn gold big block" data-action="paste-read">Leer lista</button>'}
+      <button class="btn ghost block" data-action="close">Cancelar</button>
+    </div>`;
+}
+
+function sheetPortal(sh) {
+  const { date, stops } = sh.portal;
+  const have = new Set(store.route(date).stops.map((x) => clientKey(x.name)));
+  const fresh = stops.filter((it) => !have.has(clientKey(it.name)));
+  return `<h2 id="sheet-title">Ruta del portal</h2>
+    <div class="small muted" style="margin:-6px 0 12px">${esc(dayName(date).long)} · ${stops.length === 1 ? '1 parada' : `${stops.length} paradas`}${fresh.length < stops.length ? ` · ${stops.length - fresh.length} ya estaban en la ruta` : ''}</div>
+    <ul class="parsed">${stops.map((it) => {
+      const mem = store.findClient(it.name);
+      const dup = have.has(clientKey(it.name));
+      return `<li${dup ? ' style="opacity:.55"' : ''}><b>${esc(it.name)}</b>${mem ? ' <span class="chip mem">Recordado</span>' : ''}${dup ? ' <span class="chip any">Ya está</span>' : ''}
+        <div class="muted small">${esc(it.address)}</div>
+        <div class="chips" style="margin-top:6px">${it.closed ? '<span class="chip late">Ese día cierra</span>' : ''}${windowsChips(it.windows.length ? it.windows : mem?.windows)}</div></li>`;
+    }).join('')}</ul>
+    <div class="foot">
+      ${sh.busy ? `<button class="btn gold big block" disabled><span class="spin"></span>${esc(sh.busy)}</button>`
+        : fresh.length ? `<button class="btn gold big block" data-action="paste-add">${fresh.length === 1 ? 'Añadir 1 parada' : `Añadir ${fresh.length} paradas`} · ${esc(dayName(date).rel)}</button>`
+        : '<button class="btn gold big block" data-action="close">Ya las tienes todas</button>'}
       <button class="btn ghost block" data-action="close">Cancelar</button>
     </div>`;
 }
@@ -1039,12 +1073,15 @@ const actions = {
   'open-paste': () => openSheet({ kind: 'paste', text: '' }),
   'paste-read': () => {
     syncDraft();
+    const portal = parsePortal(ui.sheet.text);
+    if (portal) { ui.sheet.portal = portal; ui.sheet.parsed = portal.stops; return renderSheet(); }
     const parsed = parseList(ui.sheet.text);
     if (!parsed.length) return toast('No veo ninguna parada en el texto');
     ui.sheet.parsed = parsed;
     renderSheet();
   },
   'paste-add': () => pasteAdd(),
+  'copy-bridge': () => copyBridge(),
   'search-address': () => searchAddress(),
   pick: (el) => { syncDraft(); pickCandidate(ui.sheet, +el.dataset.i); renderSheet(); },
   'add-window': (el) => {
@@ -1119,9 +1156,11 @@ const actions = {
 async function pasteAdd() {
   const sh = ui.sheet;
   if (sh.busy) return;
+  const portal = sh.portal;
+  if (portal) ui.date = portal.date;
   const r = currentRoute();
-  const s = settings();
-  const items = sh.parsed;
+  const have = new Set(r.stops.map((x) => clientKey(x.name)));
+  const items = portal ? sh.parsed.filter((it) => !have.has(clientKey(it.name))) : sh.parsed;
   let n = 0, unlocated = 0;
   for (const it of items) {
     n++;
@@ -1143,7 +1182,11 @@ async function pasteAdd() {
     }
     if (!located(stop)) unlocated++;
     const fields = stopFields(stop);
-    store.rememberClient(fields);
+    if (portal) {
+      // Del portal se recuerda dónde está y el teléfono; el horario solo si vale para todos los días.
+      store.rememberClient({ ...fields, notes: undefined, windows: it.clientWindows.length ? it.clientWindows : undefined });
+      fields.notes = [mem?.notes, it.notes].filter(Boolean).join('\n').slice(0, 500);
+    } else store.rememberClient(fields);
     r.stops.push({ id: uid(), ...fields, done: false });
   }
   if (r.status === 'done') r.status = 'draft';
@@ -1154,6 +1197,15 @@ async function pasteAdd() {
   toast(unlocated ? `${added} · ${unlocated} sin ubicar` : added);
   if (r.status === 'active') return replanActive(null);
   if (r.stops.some(located)) await optimize(); else render();
+}
+
+async function copyBridge() {
+  try {
+    await navigator.clipboard.writeText(BRIDGE_URL);
+    toast('Copiado. Ahora guárdalo como favorito en el navegador (paso 2).', 5000);
+  } catch {
+    toast('No he podido copiarlo: prueba otra vez', 4000);
+  }
 }
 
 const PROBE = [{ lat: 41.372083, lon: 2.077356 }, { lat: 41.3756, lon: 2.1316 }]; // almacén → Carrer de Sants
@@ -1332,7 +1384,7 @@ function sharedText() {
   const q = new URLSearchParams(location.search);
   const text = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n').trim();
   if (q.has('text') || q.has('title') || q.has('url')) history.replaceState(null, '', location.pathname);
-  return text.slice(0, 20000);
+  return text.slice(0, 100000);
 }
 
 // ---------- Arranque ----------
@@ -1344,8 +1396,9 @@ render();
 const shared = sharedText();
 if (shared) {
   // Lo compartido va a la hoja de "Pegar lista", ya leído, para revisarlo antes de añadir.
-  openSheet({ kind: 'paste', text: shared });
-  ui.sheet.parsed = parseList(shared);
+  const portal = parsePortal(shared);
+  openSheet({ kind: 'paste', text: portal ? '' : shared, portal });
+  ui.sheet.parsed = portal ? portal.stops : parseList(shared);
   ui.sheet.initial = '';
   renderSheet();
 }
