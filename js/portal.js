@@ -213,52 +213,44 @@ export function parsePortal(text) {
 
 // Se ejecuta dentro del portal (no en la app): no puede usar nada de fuera de la función.
 // Solo lee: las mismas dos consultas que hace la pantalla «Repartos de entrega» del portal.
+// Corto a propósito: Edge para Android corta la dirección de un favorito hacia los 5.000 caracteres.
 function bridge() {
-  const NAME = 'Ruta Escolà';
-  const esc = (v) => String(v == null ? '' : v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-  const old = document.getElementById('ruta-escola-puente');
-  if (old) old.remove();
-  const box = document.createElement('div');
-  box.id = 'ruta-escola-puente';
-  box.style.cssText = 'position:fixed;left:12px;right:12px;bottom:12px;z-index:2147483647;max-width:520px;margin:0 auto;background:#0e1311;color:#eee7d4;border:1px solid #c9a54c;border-radius:16px;padding:16px 16px 10px;font:15px/1.45 system-ui,sans-serif;box-shadow:0 12px 40px rgba(0,0,0,.45)';
-  const say = (html) => {
-    box.innerHTML = '<div style="color:#c9a54c;font-weight:700;margin-bottom:6px">Pasar a ' + NAME + '</div>' + html +
-      '<button data-x style="display:block;margin:8px auto 0;padding:8px 14px;background:none;border:0;color:#eee7d4;opacity:.75;font:inherit">Cerrar</button>';
-    box.querySelector('[data-x]').onclick = () => box.remove();
+  const q = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => '&#' + c.charCodeAt(0) + ';');
+  let box = document.getElementById('ruta-puente');
+  if (box) box.remove();
+  box = document.createElement('div');
+  box.id = 'ruta-puente';
+  box.style.cssText = 'position:fixed;inset:auto 12px 12px;z-index:2147483647;background:#0e1311;color:#eee7d4;border:1px solid #c9a54c;border-radius:16px;padding:16px;font:15px/1.4 sans-serif';
+  const say = (h) => {
+    box.innerHTML = '<b style="color:#c9a54c">Pasar a Ruta</b><div data-m>' + h + '</div><button onclick="this.parentNode.remove()" style="margin-top:8px;background:none;border:0;color:inherit">Cerrar</button>';
   };
   document.body.appendChild(box);
-  if (!/(^|\.)escoladist\.com$/.test(location.hostname)) return say('Abre primero portal.escoladist.com e inicia sesión, y vuelve a tocar el marcador.');
-  say('Buscando la ruta pendiente…');
-  const post = (url, body) => fetch(url, {
-    method: 'POST', credentials: 'same-origin', body,
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
-  }).then((r) => { if (!r.ok) throw new Error('el portal responde ' + r.status); return r.json(); });
-  const iso = (f) => String(f || '').split('/').reverse().join('-');
+  if (!/(^|\.)escoladist\.com$/.test(location.hostname)) return say('Abre el portal, inicia sesión y vuelve a tocar el marcador.');
+  say('Buscando la ruta…');
+  const post = (url, body) => fetch(url, { method: 'POST', body, headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' } })
+    .then((r) => { if (!r.ok) throw Error(r.status); return r.json(); });
+  const iso = (f) => String(f).split('/').reverse().join('');
   post('/Repartos/RepartosDatos', 'codReparto=&status=Q&sentido=desc&verTodas=true').then(async (res) => {
-    const list = (res.data || []).filter((e) => e.status === 'P' || e.status === 'R').sort((a, b) => iso(b.fecha).localeCompare(iso(a.fecha))).slice(0, 4);
-    if (!list.length) return say('Todavía no hay ninguna ruta pendiente. La de mañana suele aparecer sobre las 17:30.');
+    const list = (res.data || []).filter((e) => /^[PR]$/.test(e.status)).sort((a, b) => iso(b.fecha) - iso(a.fecha)).slice(0, 4);
+    if (!list.length) return say('Aún no hay ruta pendiente. La de mañana suele salir sobre las 17:30.');
     const routes = [];
     for (const e of list) {
       const pts = (await post('/Repartos/PuntosEntregaDatos', 'draw=1&start=0&length=-1&paginate=0&id_entrega=' + encodeURIComponent(e.id_entrega))).data || [];
-      routes.push({
-        e, n: new Set(pts.map((p) => p.id_cliente)).size,
-        text: JSON.stringify({ ruta: 'escola-portal', v: 1, fecha: e.fecha, id: e.id_entrega,
-          paradas: pts.map((p) => [p.id_cliente, p.razon_social, p.direccion, p.poblacion, p.telefono, p.horario, p.texto_libre_pedido, p.observaciones, p.orden]) }),
-      });
+      routes.push([e.fecha, new Set(pts.map((p) => p.id_cliente)).size, JSON.stringify({ ruta: 'escola-portal', v: 1, fecha: e.fecha, id: e.id_entrega,
+        paradas: pts.map((p) => [p.id_cliente, p.razon_social, p.direccion, p.poblacion, p.telefono, p.horario, p.texto_libre_pedido, p.observaciones, p.orden]) })]);
     }
-    say(routes.map((r, i) => '<button data-i="' + i + '" style="display:block;width:100%;margin-top:8px;padding:14px;border:0;border-radius:12px;background:#c9a54c;color:#14110a;font:700 16px system-ui,sans-serif">Ruta del ' +
-      esc(r.e.fecha) + ' · ' + r.n + (r.n === 1 ? ' parada' : ' paradas') + '</button>').join('') +
-      '<div data-m style="margin-top:8px;font-size:13px;opacity:.85">Al compartir, elige <b>Ruta</b>.</div>');
+    say(routes.map((r, i) => '<button data-i=' + i + ' style="display:block;width:100%;margin:8px 0;padding:14px;border:0;border-radius:12px;background:#c9a54c;font-weight:700">Ruta del ' + q(r[0]) + ' · ' + r[1] + ' paradas</button>').join('') + 'Al compartir, elige <b>Ruta</b>.');
     box.querySelectorAll('[data-i]').forEach((b) => {
       b.onclick = async () => {
-        const r = routes[+b.dataset.i], m = box.querySelector('[data-m]');
-        if (navigator.share) {
-          try { await navigator.share({ title: NAME, text: r.text }); return; } catch (err) { if (err && err.name === 'AbortError') return; }
-        }
-        try { await navigator.clipboard.writeText(r.text); m.innerHTML = 'Copiada. En la app: <b>Pegar lista</b>, pega y <b>Leer lista</b>.'; } catch (err) { m.textContent = 'No he podido compartirla ni copiarla.'; }
+        const t = routes[b.dataset.i][2], m = box.querySelector('[data-m]');
+        try { return await navigator.share({ title: 'Ruta', text: t }); } catch (err) { if (err.name === 'AbortError') return; }
+        try { await navigator.clipboard.writeText(t); m.innerHTML = 'Copiada. En la app: <b>Pegar lista</b>, pega y <b>Leer lista</b>.'; } catch { m.textContent = 'No he podido compartirla ni copiarla.'; }
       };
     });
-  }).catch((err) => say('No he podido leer la ruta (' + esc(err.message) + '). ¿Tienes la sesión iniciada?'));
+  }).catch((err) => say('No he podido leer la ruta (' + q(err.message) + '). ¿Has iniciado sesión?'));
 }
 
-export const BRIDGE_URL = 'javascript:' + encodeURIComponent(`(${bridge.toString()})()`);
+// Sin saltos de línea ni sangría, y codificando solo lo imprescindible para que quepa en un favorito.
+export const BRIDGE_URL = 'javascript:' + `(${bridge.toString()})()`
+  .replace(/\n\s*/g, '')
+  .replace(/[%#\s]|[^\x20-\x7e]/g, (c) => (c === ' ' ? c : encodeURIComponent(c)));

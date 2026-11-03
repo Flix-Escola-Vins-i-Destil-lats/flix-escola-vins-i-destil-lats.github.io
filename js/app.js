@@ -203,8 +203,8 @@ function firstSteps() {
       ${step(false, 2, 'Practica una ruta',
         `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Voy a salir», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
          <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
-      ${step(false, 3, 'Pega tu ruta de verdad',
-        `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
+      ${step(false, 3, 'Trae tu ruta de verdad',
+        `<div class="small muted">Del portal, con el marcador «Pasar a Ruta» (cómo crearlo: Ajustes → Ruta del portal). De un mensaje, compártelo a Ruta o usa «Pegar lista». Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
     </ol>
   </div>`;
 }

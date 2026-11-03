@@ -108,10 +108,14 @@ test('ruta del portal: avisa si ese día cierra y descarta lo que no es una ruta
 test('el marcador es un enlace javascript: que solo lee del portal', () => {
   assert.ok(BRIDGE_URL.startsWith('javascript:'));
   const code = decodeURIComponent(BRIDGE_URL.slice('javascript:'.length));
+  assert.match(code, /^\(function bridge\(\)/);
   assert.doesNotThrow(() => new Function(code));
   const urls = [...code.matchAll(/'(\/[A-Za-z]+\/[A-Za-z]+)'/g)].map((m) => m[1]);
   assert.deepEqual([...new Set(urls)].sort(), ['/Repartos/PuntosEntregaDatos', '/Repartos/RepartosDatos']);
-  assert.ok(BRIDGE_URL.length < 12000, `marcador de ${BRIDGE_URL.length} caracteres`);
+  // Edge para Android corta la dirección de un favorito hacia los 5.000 caracteres (y los espacios
+  // pueden acabar como %20): hay que dejar margen.
+  assert.ok(BRIDGE_URL.length + (BRIDGE_URL.match(/ /g) || []).length * 2 < 4200, `marcador de ${BRIDGE_URL.length} caracteres`);
+  assert.doesNotMatch(BRIDGE_URL, /[\n#]/);
 });
 
 test('el horario del pedido no se ensancha con un «MAÑANA» de las observaciones', () => {
