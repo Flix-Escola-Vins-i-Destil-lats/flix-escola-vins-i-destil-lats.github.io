@@ -384,4 +384,4 @@ body.has-actionbar .toast { bottom: calc(170px + var(--safe-b)); }
 .park-actions svg { width: 16px; height: 16px; }
 
 /* Notas de la parada: varias líneas (las del portal vienen así) */
-textarea.input.notes { min-height: 0; font-size: inherit; }
+textarea.input.notes-field { min-height: 0; font-size: inherit; }

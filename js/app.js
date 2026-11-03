@@ -6,7 +6,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.7.2';
+export const VERSION = '1.7.3';
 
 // ---------- Utilidades ----------
 
@@ -718,7 +718,7 @@ function sheetStop(sh) {
       <label class="field" style="flex:1.4"><span>Teléfono</span><input class="input" type="tel" id="f-phone" value="${esc(d.phone || '')}" placeholder="Opcional"></label>
     </div>
     ${serviceHint(sh)}
-    <label class="field"><span>Notas para la entrega</span><textarea class="input notes" id="f-notes" rows="3" placeholder="Ej. entrar por la puerta de atrás o plaza DUM 08-123">${esc(d.notes || '')}</textarea></label>
+    <label class="field"><span>Notas para la entrega</span><textarea class="input notes-field" id="f-notes" rows="3" placeholder="Ej. entrar por la puerta de atrás o plaza DUM 08-123">${esc(d.notes || '')}</textarea></label>
 
     <div class="foot">
       <button class="btn gold big block" data-action="save-stop">${isClient ? 'Guardar cliente' : sh.id ? 'Guardar' : 'Añadir a la ruta'}</button>
