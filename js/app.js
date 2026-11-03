@@ -4,7 +4,7 @@ import { computePlan } from './planner.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.6.0';
+export const VERSION = '1.6.1';
 
 // ---------- Utilidades ----------
 
@@ -278,7 +278,7 @@ function renderPlanning(r) {
   const unloc = r.stops.filter((x) => !located(x)).length;
   if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? 'Hay 1 parada' : `Hay ${unloc} paradas`} sin ubicar. Tócala para buscar la dirección; mientras tanto no entra en la ruta.</div></div>`;
 
-  if (portalApp()) html += `<a class="btn gold big block" href="${PORTAL_INTENT}" style="margin-bottom:10px">Traer la ruta del portal</a>`;
+  if (portalApp()) html += `<a class="btn gold big block" href="${PORTAL_INTENT}" style="margin:14px 0 10px">Traer la ruta del portal</a>`;
   html += `<div class="actions2">
     <button class="btn ghost" data-action="open-paste">${I.paste}Pegar lista</button>
     <button class="btn ghost" data-action="open-stop">${I.plus}Añadir parada</button>
