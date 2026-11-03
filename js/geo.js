@@ -62,7 +62,9 @@ export function normalizeAddress(q) {
   let s = String(q || '').trim().replace(/\s+/g, ' ');
   for (const [re, rep] of TYPE_ES_CA) s = s.replace(re, rep);
   s = s.replace(/ de las /gi, ' de les ').replace(/ de los /gi, ' dels ').replace(/\bn[ºo°]\.?\s*/gi, '');
-  const parts = s.split(',');
+  // Lo que va tras el número es del local ("75 LOCAL 2", "12 BAJOS", "3 PISO 2"): los buscadores no lo
+  // entienden y no devuelven nada. Se busca el portal.
+  const parts = s.split(',').map((p) => p.replace(/(\b\d+\s*[a-z]?)\s+(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala)\b.*$/i, '$1'));
   if (parts.length > 1) {
     const town = TOWN_ES_CA[fold(parts[parts.length - 1])];
     if (town) parts[parts.length - 1] = ` ${town}`;
