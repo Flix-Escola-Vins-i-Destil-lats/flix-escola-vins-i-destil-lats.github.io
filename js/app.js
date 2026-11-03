@@ -4,7 +4,7 @@ import { computePlan } from './planner.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.5.2';
+export const VERSION = '1.6.0';
 
 // ---------- Utilidades ----------
 
@@ -203,8 +203,9 @@ function firstSteps() {
       ${step(false, 2, 'Practica una ruta',
         `<div class="small muted">6 paradas de ejemplo para probar optimizar, «Voy a salir», Waze, SPRO y «Siguiente». Se borra con un toque.</div>
          <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
-      ${step(false, 3, 'Pega tu ruta de verdad',
-        `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
+      ${step(false, 3, portalApp() ? 'Trae tu ruta de verdad' : 'Pega tu ruta de verdad', portalApp()
+        ? `<div class="small muted">Toca «Traer la ruta del portal», entra con tu usuario del portal (solo la primera vez) y pulsa el botón dorado. Ahí mismo puedes pedir que te avise cuando salga la ruta de mañana.</div>`
+        : `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
     </ol>
   </div>`;
 }
@@ -277,6 +278,7 @@ function renderPlanning(r) {
   const unloc = r.stops.filter((x) => !located(x)).length;
   if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? 'Hay 1 parada' : `Hay ${unloc} paradas`} sin ubicar. Tócala para buscar la dirección; mientras tanto no entra en la ruta.</div></div>`;
 
+  if (portalApp()) html += `<a class="btn gold big block" href="${PORTAL_INTENT}" style="margin-bottom:10px">Traer la ruta del portal</a>`;
   html += `<div class="actions2">
     <button class="btn ghost" data-action="open-paste">${I.paste}Pegar lista</button>
     <button class="btn ghost" data-action="open-stop">${I.plus}Añadir parada</button>
@@ -1359,11 +1361,40 @@ setInterval(() => {
 
 // ---------- Recibir una lista compartida (WhatsApp, portal, correo…) ----------
 
-function sharedText() {
+// La APK (desde la 1.2.0) tiene una pantalla con el portal que trae la ruta; se abre con este enlace.
+const PORTAL_INTENT = 'intent://portal#Intent;scheme=rutaescola;package=com.flixescola.ruta;end';
+
+function portalApp() {
+  try {
+    const [major, minor] = (localStorage.getItem('ruta-apk') || '').split('.').map(Number);
+    return major > 1 || (major === 1 && minor >= 2);
+  } catch { return false; }
+}
+
+// Lo que llega al abrir la app: una lista compartida (?text=), la ruta del portal que manda la APK
+// (#portal=, que nunca sale del móvil) y la versión de la APK (?apk=).
+function incoming() {
   const q = new URLSearchParams(location.search);
-  const text = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n').trim();
-  if (q.has('text') || q.has('title') || q.has('url')) history.replaceState(null, '', location.pathname);
+  const apk = q.get('apk');
+  if (apk) try { localStorage.setItem('ruta-apk', apk.slice(0, 20)); } catch { /* sin almacenamiento */ }
+  let text = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n').trim();
+  if (location.hash.startsWith('#portal=')) {
+    try { text = decodeURIComponent(location.hash.slice('#portal='.length)); } catch { text = ''; }
+  }
+  if (location.search || location.hash) history.replaceState(null, '', location.pathname);
   return text.slice(0, 100000);
+}
+
+// Lo recibido va a la hoja de "Pegar lista", ya leído, para revisarlo antes de añadir.
+function receive(text) {
+  if (!text) return;
+  const portal = parsePortal(text);
+  if (ui.sheet) closeSheet();
+  if (ui.tab !== 'route') { ui.tab = 'route'; render(); }
+  openSheet({ kind: 'paste', text: portal ? '' : text, portal });
+  ui.sheet.parsed = portal ? portal.stops : parseList(text);
+  ui.sheet.initial = '';
+  renderSheet();
 }
 
 // ---------- Arranque ----------
@@ -1371,15 +1402,10 @@ function sharedText() {
 store.setSaveErrorHandler(() => toast('No queda espacio para guardar. Exporta tus clientes y borra rutas antiguas.', 8000));
 store.pruneOldRoutes();
 ui.date = defaultDate();
+const first = incoming();
 render();
-const shared = sharedText();
-if (shared) {
-  // Lo compartido va a la hoja de "Pegar lista", ya leído, para revisarlo antes de añadir.
-  const portal = parsePortal(shared);
-  openSheet({ kind: 'paste', text: portal ? '' : shared, portal });
-  ui.sheet.parsed = portal ? portal.stops : parseList(shared);
-  ui.sheet.initial = '';
-  renderSheet();
-}
+receive(first);
+// Con la app ya abierta, la APK manda la ruta cambiando solo el #: no se recarga la página.
+window.addEventListener('hashchange', () => receive(incoming()));
 store.requestPersist().then((p) => { ui.persisted = p; if (ui.tab === 'settings' && !ui.sheet) render(); });
 registerServiceWorker();
