@@ -370,6 +370,7 @@ body.has-actionbar .toast { bottom: calc(170px + var(--safe-b)); }
 /* Horario estricto / flexible */
 .chip.strict { background: transparent; color: var(--late); border: 1px solid rgba(226, 114, 91, 0.4); }
 .seg.timing { display: flex; }
+.seg.timing + .hint { margin-top: 8px; }
 .seg.timing button { flex: 1; }
 
 /* Aparcar una vez para varias entregas */
@@ -381,3 +382,6 @@ body.has-actionbar .toast { bottom: calc(170px + var(--safe-b)); }
 .park-actions { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin: 12px 0 4px; }
 .park-actions .btn { min-height: 44px; padding: 0 12px; }
 .park-actions svg { width: 16px; height: 16px; }
+
+/* Notas de la parada: varias líneas (las del portal vienen así) */
+textarea.input.notes { min-height: 0; font-size: inherit; }
