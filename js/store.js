@@ -19,6 +19,9 @@ const empty = () => ({
     shiftStart: '07:30',
     service: 10,
     returnToDepot: true,
+    // Horarios de entrega de los clientes al ordenar la ruta. Apagado de momento (03/11/2026): hasta comprobar
+    // en la calle que los horarios del portal son fiables, el orden sale por cercanía y tráfico.
+    useWindows: false,
     nav: 'waze',
     leaveIn: 10,
   },

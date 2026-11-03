@@ -6,7 +6,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.8.2';
+export const VERSION = '1.9.0';
 
 // ---------- Utilidades ----------
 
@@ -102,6 +102,7 @@ function dayName(iso) {
 const TIMING = [['strict', 'Estricto'], ['', 'Normal'], ['flex', 'Flexible']];
 const STRICT_MARGIN = 10, FLEX_EXTRA = 30;
 function planWindows(x) {
+  if (!settings().useWindows) return []; // horarios apagados en Ajustes: solo cercanía y tráfico
   const ws = x.windows || [];
   if (x.timing === 'strict') return ws.map(([a, b]) => [a, Math.max(a + 10, b - STRICT_MARGIN)]);
   if (x.timing === 'flex') return ws.map(([a, b]) => [a, Math.min(b + FLEX_EXTRA, 23 * 60 + 59)]);
@@ -176,7 +177,7 @@ function currentRoute() { return store.route(ui.date); }
 
 function signature(r) {
   return JSON.stringify([
-    settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey,
+    settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey, !!settings().useWindows,
     r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, s.service, s.timing || '']),
     parkingFor(r).map((p) => [p.ids, p.lat, p.lon]),
   ]);
@@ -249,7 +250,7 @@ function orderedStops(r) {
 function stopCard(s, i, leg, extra = '', park = null) {
   const chips = [windowsChips(s.windows), timingChip(s)];
   // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible).
-  const real = leg ? serviceStart(leg.arrive, s.windows).lateBy : 0;
+  const real = leg && settings().useWindows ? serviceStart(leg.arrive, s.windows).lateBy : 0;
   if (s.failed) chips.unshift(`<span class="chip late">No entregado · ${esc(s.failed)}</span>`);
   else if (real > 0.5 && !(leg?.late > 0.5)) chips.push(`<span class="chip wait">${Math.round(real)} min tarde · flexible</span>`);
   else if (leg?.late > 0.5) chips.push(`<span class="chip late">${real > 0.5 ? lateText(real) : 'Sin margen · estricto'}</span>`);
@@ -355,6 +356,7 @@ function renderPlanning(r) {
       const lateOnes = p.legs.filter((l) => l.late > 0.5).map((l) => r.stops.find((x) => x.id === l.id)?.name).filter(Boolean);
       html += `<div class="notice warn">${I.warn}<div>No da tiempo a llegar dentro del horario a <b>${esc(lateOnes.join(', '))}</b>. Revisa sus horarios o avisa al cliente.</div></div>`;
     }
+    if (!s.useWindows) html += `<div class="notice gold">${I.info}<div>Horarios de los clientes apagados: el orden sale por cercanía y tráfico. Se encienden en <button class="linkbtn" data-action="tab" data-tab="settings" style="color:inherit">Ajustes</button>.</div></div>`;
     html += `<div class="notice info">${I.info}<div>Calculada con ${p.source === 'tomtom' ? 'el tráfico previsto para esa hora' : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.</div></div>`;
   }
 
@@ -572,6 +574,7 @@ function renderSettings() {
   <div class="card">
     <label class="field"><span>Hora de inicio</span><input class="input" type="time" id="set-shift" value="${esc(s.shiftStart)}"></label>
     <label class="field"><span>Minutos de descarga por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="1" max="90" id="set-service" value="${esc(s.service)}"></label>
+    <label class="toggle"><span>Tener en cuenta los horarios de los clientes<span class="tiny faint" style="display:block">${s.useWindows ? 'Ordena la ruta para llegar dentro del horario de cada cliente.' : 'Apagado: el orden sale por cercanía y tráfico. Los horarios se siguen viendo en cada parada.'}</span></span><input type="checkbox" id="set-windows" ${s.useWindows ? 'checked' : ''}></label>
     <label class="toggle"><span>Volver al almacén al acabar<span class="tiny faint" style="display:block">Cuenta el regreso al calcular la ruta</span></span><input type="checkbox" id="set-return" ${s.returnToDepot ? 'checked' : ''}></label>
     <div class="toggle" style="border:0;padding-bottom:0"><span>Navegar con</span>
       <span class="seg"><button data-action="nav-app" data-v="waze" class="${s.nav === 'waze' ? 'on' : ''}" aria-pressed="${s.nav === 'waze'}">Waze</button><button data-action="nav-app" data-v="gmaps" class="${s.nav === 'gmaps' ? 'on' : ''}" aria-pressed="${s.nav === 'gmaps'}">Google Maps</button></span>
@@ -1439,6 +1442,7 @@ document.addEventListener('change', (e) => {
   if (t.id === 'set-shift') store.setSettings({ shiftStart: t.value || '07:30' });
   if (t.id === 'set-service') store.setSettings({ service: Math.min(180, Math.max(1, parseInt(t.value, 10) || 10)) });
   if (t.id === 'set-return') store.setSettings({ returnToDepot: t.checked });
+  if (t.id === 'set-windows') { store.setSettings({ useWindows: t.checked }); render(); }
   if (t.id === 'set-key') store.setSettings({ tomtomKey: t.value.trim() });
   if (t.id === 'set-ors') store.setSettings({ orsKey: t.value.trim() });
   if (t.id === 'import-file' && t.files[0]) {
