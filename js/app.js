@@ -6,7 +6,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.8.0';
+export const VERSION = '1.8.1';
 
 // ---------- Utilidades ----------
 
