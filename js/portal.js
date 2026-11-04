@@ -133,6 +133,18 @@ export function cleanOrderText(text) {
 // ---------- Ruta compartida desde el portal ----------
 
 const MARK = '"ruta":"escola-portal"';
+// Lo que en una observación de factura es para el conductor (llamar, dónde entregar, cómo entrar, cobrar en mano).
+// Sacado de unas 100 observaciones reales: lo de la oficina son referencias («PEDIDO CLIENTE PC…», «REF.:»), quién lo
+// pidió («Pedido por… (Diageo)») y el horario (que ya va a la franja); lo del conductor, esto y los teléfonos de contacto.
+const DRIVER = /\b(llam|telef|movil|whats|contacto|recib|entreg|acces|entrad|puerta|porter|timbre|muelle|parking|aparc|avis|pregunt|dejar|deixar|recepc|conserj|cerrad|montacarg|ascensor|sotano|almac|hall|economat|stand|cobr|contado|efectivo|recog|retir|rerir|abon|devol)/;
+const PHONE = /(?:\+\d{2}\s?|\b)[6789](?:[\s.]*\d){8}\b/;
+const ORDER_REF = /\b(?:pedido|peido|ped|ref)\b\.?\s*(?:cliente|cte)?\s*(?:n[ºo°]\.?)?\s*:?\s*(?=[\w/-]*\d)[\w/-]+/gi;
+function driverNotes(text) {
+  return String(text || '').split(/\s+-\s+/) // los saltos de línea no separan: el teléfono suele ir en la línea de debajo del nombre
+    // El horario que va delante («11:00 A 13:00H RECIBE MARTA») ya está en la franja.
+    .map((t) => txt(t.replace(ORDER_REF, ' ').replace(/^\s*(?:de\s+)?\d{1,2}(?:[:.,]\d\d)?\s*h?\s*(?:a|-)\s*\d{1,2}(?:[:.,]\d\d)?\s*(?:hs|h)?\b/i, '').replace(/[\s.:-]+$/, '').replace(/^[\s.:-]+/, ''), 120))
+    .filter((t) => DRIVER.test(normalize(t)) || PHONE.test(t));
+}
 const txt = (v, max = 200) => (v == null ? '' : String(v)).replace(/\s+/g, ' ').trim().slice(0, max);
 
 // Lo que comparte el marcador: {"ruta":"escola-portal","v":1,"fecha":"04/11/2026","id":…,"paradas":[[id_cliente,
@@ -164,7 +176,7 @@ export function parsePortal(text) {
     const nm = txt(name, 120);
     if (!nm) continue;
     const key = `${txt(idc, 20) || nm}|${txt(dir)}`;
-    const g = groups.get(key) || { name: nm, dir: txt(dir), town: txt(town, 80), phone: '', horario: txt(horario), orders: new Set(), obs: new Set(), n: 0, orden: Infinity, load: null };
+    const g = groups.get(key) || { name: nm, dir: txt(dir), town: txt(town, 80), phone: '', horario: txt(horario), orders: new Set(), obs: new Set(), inv: new Set(), n: 0, orden: Infinity, load: null };
     g.n++;
     // Las APK anteriores a la 1.4.0 no mandan la carga: entonces la parada queda sin ella.
     if (row.length >= 14) {
@@ -178,9 +190,13 @@ export function parsePortal(text) {
     if (!g.phone && /\d{6,}/.test(String(phone || '').replace(/\D/g, ''))) g.phone = txt(phone, 40);
     const o = cleanOrderText(txt(order));
     if (o) g.orders.add(o);
-    // De las observaciones solo interesa la del pedido; la de la factura es para la oficina.
-    const ob = txt(String(obs || '').split(/obs\.?\s*factura\s*:/i)[0].replace(/obs\.?\s*pedido\s*:/i, ''), 160);
+    // La observación del pedido va entera. La de la factura es casi siempre para la oficina (referencias, pagos),
+    // pero a veces trae algo para el conductor («Siempre llamar al…», «Entregar en…»): solo eso se queda.
+    const [pedido, ...factura] = String(obs || '').split(/obs\.?\s*factura\s*:/i);
+    const ob = txt(pedido.replace(/obs\.?\s*pedido\s*:/i, ''), 160);
     if (ob) g.obs.add(ob);
+    const forDriver = driverNotes(factura.join(' - '));
+    if (forDriver.length) g.inv.add(forDriver.join(' · '));
     if (+orden < g.orden) g.orden = +orden;
     groups.set(key, g);
   }
@@ -213,6 +229,7 @@ export function parsePortal(text) {
       g.horario ? `Horario: ${g.horario}` : '',
       ...orders.map((o) => `Pedido: ${o}`),
       ...obs.filter((o) => !sameDay.test(normalize(o))).map((o) => `Obs.: ${o}`),
+      ...[...g.inv].map((o) => `Factura: ${o}`),
       g.n > 1 ? `${g.n} albaranes` : '',
     ].filter(Boolean).join('\n').slice(0, 500);
     return {

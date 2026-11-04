@@ -157,3 +157,41 @@ test('carga del pedido: cajas exactas, botellas estimadas por tamaño de caja, y
   assert.equal(vieja.load, null);
   assert.equal(bigOrder(null), false);
 });
+
+test('ruta del portal: de las observaciones de la factura se queda solo lo que es para el conductor', () => {
+  const r = parsePortal(ruta([
+    [40, 'TIENDA CUATRO', 'CARRER NOU, 4', 'BARCELONA', '', '11-13', '',
+      'Obs. pedido: MIERCOLES\rObs. factura: DE 11 A 13HS - Siempre llamar al: 600 000 000 Ana - ENTREGAR EN CARRER VELL 6', 1],
+    [50, 'BAR CINCO', 'CARRER NOU, 5', 'BARCELONA', '', '9-13', '',
+      'Obs. pedido: \r\n\rObs. factura: REF.: 2311022 - PAGO POR TRANSFERENCIA - 11:00 A 13:00', 2],
+    [60, 'BAR SEIS', 'CARRER NOU, 6', 'BARCELONA', '', '9-13', '', 'Obs. factura: COBRAR AL CONTADO. TIMBRE DE LA IZQUIERDA', 3],
+  ]));
+  const [tienda, bar, seis] = r.stops;
+  assert.match(tienda.notes, /Factura: Siempre llamar al: 600 000 000 Ana · ENTREGAR EN CARRER VELL 6/);
+  assert.doesNotMatch(tienda.notes, /13HS/); // el horario ya va en la franja
+  assert.doesNotMatch(bar.notes, /Factura|REF|TRANSFERENCIA/); // cosas de la oficina
+  assert.match(seis.notes, /Factura: COBRAR AL CONTADO. TIMBRE DE LA IZQUIERDA/);
+});
+
+test('factura: devoluciones, contactos con teléfono y dónde entregar se quedan; referencias y quién pidió, no', () => {
+  const r = parsePortal(ruta([
+    [1, 'A', 'C/ A, 1', 'BARCELONA', '', '', '', 'Obs. factura: DE 11:30 A 15:00 RECOGER Y ABONAR 1 BOT TRIPLE SEC', 1],
+    [2, 'B', 'C/ B, 1', 'BARCELONA', '', '', '', 'Obs. factura: CONTACTO PERE - TE 600 11 22 33 - PEDIDO CLIENTE 12345678 - ALMACEN GENERAL', 2],
+    [3, 'C', 'C/ C, 1', 'BARCELONA', '', '', '', 'Obs. factura: DE 13 A 15HS - PEDIDO CLIENTE O2611ABC Joan (+34600112233)', 3],
+    [4, 'D', 'C/ D, 1', 'BARCELONA', '', '', '', 'Obs. factura: Pedido por Pere Pi ( Marca X )', 4],
+    [5, 'E', 'C/ E, 1', 'BARCELONA', '', '', '', 'Obs. factura: PED CTE: PC2600001', 5],
+    [6, 'F', 'C/ F, 1', 'BARCELONA', '', '', '', 'Obs. factura: 11:00 A 13:00H PEDIDO CLIENTE: CDP00001 RECIBE MARTA', 6],
+    [7, 'G', 'C/ G, 1', 'BARCELONA', '', '', '', 'Obs. factura: TEL. 93 000 00 00', 7],
+    [8, 'H', 'C/ H, 1', 'BARCELONA', '', '', '', 'Obs. factura: PEDIDO CLIENTE O26ABC\r\nHotel Uno - Pau Director\r\n(+34600112233)', 8],
+  ]));
+  const f = (s) => (s.notes.match(/Factura: (.*)/) || [])[1];
+  const [a, b, c, d, e, g, h, i] = r.stops;
+  assert.match(f(a), /RECOGER Y ABONAR 1 BOT TRIPLE SEC/);
+  assert.equal(f(b), 'CONTACTO PERE · TE 600 11 22 33 · ALMACEN GENERAL');
+  assert.equal(f(c), 'Joan (+34600112233)');
+  assert.equal(f(d), undefined);
+  assert.equal(f(e), undefined);
+  assert.equal(f(g), 'RECIBE MARTA');
+  assert.equal(f(h), 'TEL. 93 000 00 00');
+  assert.equal(f(i), 'Pau Director (+34600112233)'); // el teléfono va en la línea de debajo del nombre
+});

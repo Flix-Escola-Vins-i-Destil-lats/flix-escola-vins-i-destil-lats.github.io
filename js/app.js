@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.13.1';
+export const VERSION = '1.13.2';
 
 // ---------- Utilidades ----------
 
@@ -823,9 +823,8 @@ function sheetPortal(sh) {
   const { date, stops } = sh.portal;
   const have = new Set(store.route(date).stops.map((x) => clientKey(x.name)));
   const fresh = stops.filter((it) => !have.has(clientKey(it.name)));
-  // Paradas que ya estaban pero sin la carga que ahora trae el portal (p. ej. traídas con una APK anterior).
-  const sameLoad = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
-  const reload = stops.filter((it) => it.load && store.route(date).stops.some((x) => clientKey(x.name) === clientKey(it.name) && !sameLoad(x.load, it.load))).length;
+  // Paradas que ya estaban pero sin la carga o las notas de factura que ahora trae el portal (traídas con una versión anterior).
+  const reload = stops.filter((it) => store.route(date).stops.some((x) => clientKey(x.name) === clientKey(it.name) && portalStale(x, it))).length;
   return `<h2 id="sheet-title">Ruta del portal</h2>
     <div class="small muted" style="margin:-6px 0 12px">${esc(dayName(date).long)} · ${stops.length === 1 ? '1 parada' : `${stops.length} paradas`}${fresh.length < stops.length ? ` · ${stops.length - fresh.length} ya estaban en la ruta` : ''}</div>
     <ul class="parsed">${stops.map((it) => {
@@ -838,7 +837,7 @@ function sheetPortal(sh) {
     <div class="foot">
       ${sh.busy ? `<button class="btn gold big block" disabled><span class="spin"></span>${esc(sh.busy)}</button>`
         : fresh.length ? `<button class="btn gold big block" data-action="paste-add">${fresh.length === 1 ? 'Añadir 1 parada' : `Añadir ${fresh.length} paradas`} · ${esc(dayName(date).rel)}</button>`
-        : reload ? `<button class="btn gold big block" data-action="paste-add">Poner la carga a ${plural(reload, 'parada', 'paradas')}</button>`
+        : reload ? `<button class="btn gold big block" data-action="paste-add">Poner al día ${plural(reload, 'parada', 'paradas')}</button>`
         : '<button class="btn gold big block" data-action="close">Ya las tienes todas</button>'}
       <button class="btn ghost block" data-action="close">Cancelar</button>
     </div>`;
@@ -1308,6 +1307,11 @@ const actions = {
   'open-map': () => import('./map.js').then((m) => m.openMap(mapApi())).catch(() => toast('No se ha podido abrir el mapa')),
 };
 
+// Lo que el portal trae de nuevo para una parada que ya estaba en la ruta: la carga y las notas de la factura.
+const sameLoad = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
+const newInvoiceLines = (x, it) => String(it.notes || '').split('\n').filter((l) => l.startsWith('Factura: ') && !String(x.notes || '').includes(l));
+const portalStale = (x, it) => (it.load && !sameLoad(x.load, it.load)) || newInvoiceLines(x, it).length > 0;
+
 async function pasteAdd() {
   const sh = ui.sheet;
   if (sh.busy) return;
@@ -1317,14 +1321,17 @@ async function pasteAdd() {
   const have = new Set(r.stops.map((x) => clientKey(x.name)));
   if (portal) {
     for (const it of sh.parsed) {
-      const old = it.load && r.stops.find((x) => clientKey(x.name) === clientKey(it.name));
-      if (old) old.load = it.load;
+      const old = r.stops.find((x) => clientKey(x.name) === clientKey(it.name));
+      if (!old) continue;
+      if (it.load) old.load = it.load;
+      const add = newInvoiceLines(old, it);
+      if (add.length) old.notes = [old.notes, ...add].filter(Boolean).join('\n').slice(0, 500);
     }
   }
   const items = portal ? sh.parsed.filter((it) => !have.has(clientKey(it.name))) : sh.parsed;
   if (portal && !items.length) {
     store.save(); closeSheet(); render();
-    return toast('Carga puesta en las paradas');
+    return toast('Paradas puestas al día');
   }
   let n = 0, unlocated = 0;
   for (const it of items) {
