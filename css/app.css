@@ -411,6 +411,6 @@ body.map-open { overflow: hidden; }
 .pop-actions .linkbtn { color: #8a5a00; }
 
 /* Pedido grande (+70 botellas o +30 cajas) */
-.chip.big { background: var(--gold); color: var(--gold-ink); font-weight: 700; }
+.chip.big { background: var(--gold); color: var(--gold-ink); font-weight: 700; white-space: normal; }
 .big-ink { color: var(--gold-2); }
 .leaflet-marker-icon.pin.big { width: 36px !important; height: 36px !important; margin-left: -18px !important; margin-top: -18px !important; border: 3px solid #fff; font-size: 15px; }
