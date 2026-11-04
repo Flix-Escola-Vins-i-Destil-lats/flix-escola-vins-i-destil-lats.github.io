@@ -79,7 +79,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     back,
     start: startMin,
     returnTo: returnToDepot,
-    stops: stops.map((s) => ({ windows: s.windows || [], service: s.service ?? 10 })),
+    stops: stops.map((s, i) => ({ windows: s.windows || [], service: (s.service ?? 10) + wp[i].extra })),
   };
   let best = optimize(ctx);
 

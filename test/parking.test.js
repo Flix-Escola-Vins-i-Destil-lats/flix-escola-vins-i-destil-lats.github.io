@@ -71,3 +71,20 @@ test('con un aparcamiento aceptado, entre sus entregas se va a pie pasando por l
   const car = await computePlan({ from: depot, depot, stops, startMin: 540, departAt: new Date('2026-11-04T09:00:00'), returnToDepot: true });
   assert.equal(car.legs[1].foot, false);
 });
+
+test('un pedido grande son varios viajes y acerca el aparcamiento a ese local', async () => {
+  const { trips } = await import('../js/parking.js');
+  assert.equal(trips({}), 1);
+  assert.equal(trips({ load: { boxes: 5, loose: 6 } }), 1);
+  assert.equal(trips({ load: { boxes: 24, loose: 52 } }), 5); // (24 + 52/6) / 8 → 5 viajes
+  const small = stop('a', 0, 0), big = { ...stop('b', 200, 0), load: { boxes: 30, loose: 0 } };
+  const zones = [zone(40, 0, 'Junto a la pequeña'), zone(160, 0, 'Junto a la grande')];
+  assert.equal(spotsFor([small, big], zones)[0].label, 'Junto a la grande');
+  assert.equal(spotsFor([small, { ...big, load: null }], zones)[0].label, 'Junto a la pequeña'); // sin carga, empate: la primera
+  const mid = medianPoint([small, big], trips);
+  assert.ok(walkM(mid, big) < walkM(mid, small));
+  // El tiempo aparcado cuenta los viajes de más
+  const one = parkedTime([small, { ...big, load: null }], at(100, 0), legsOf([small, big]));
+  const many = parkedTime([small, big], at(100, 0), legsOf([small, big]));
+  assert.ok(Math.abs(many.minutes - one.minutes - 2 * walkMin(at(100, 0), big) * 3) < 0.01);
+});

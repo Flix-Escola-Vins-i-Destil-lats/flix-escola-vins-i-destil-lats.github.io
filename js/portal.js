@@ -138,6 +138,12 @@ const txt = (v, max = 200) => (v == null ? '' : String(v)).replace(/\s+/g, ' ').
 // Lo que comparte el marcador: {"ruta":"escola-portal","v":1,"fecha":"04/11/2026","id":…,"paradas":[[id_cliente,
 // razón social, dirección, población, teléfono, horario, texto libre del pedido, observaciones, orden], …]}.
 // Devuelve { date, id, stops } o null si el texto no es eso.
+// Carga del pedido. El portal da por albarán las botellas sueltas y las cajas por tamaño (de 2, de 3 a 5, de 6 a 11
+// y de 12 o más botellas). Las cajas son exactas; las botellas que van dentro se estiman con 2, 4, 6 y 12 por caja
+// (comprobado el 04/11/2026: 11 cajas de 6 a 11 + 38 sueltas = 104 botellas en el detalle del albarán).
+export const BIG_BOTTLES = 70, BIG_BOXES = 30;
+export const bigOrder = (load) => !!load && (load.bottles > BIG_BOTTLES || load.boxes > BIG_BOXES);
+
 export function parsePortal(text) {
   const s = String(text || '');
   const i = s.indexOf(`{${MARK}`);
@@ -154,12 +160,21 @@ export function parsePortal(text) {
   const groups = new Map();
   for (const row of p.paradas.slice(0, 200)) {
     if (!Array.isArray(row)) continue;
-    const [idc, name, dir, town, phone, horario, order, obs, orden] = row;
+    const [idc, name, dir, town, phone, horario, order, obs, orden, loose, c2, c35, c611, c12] = row;
     const nm = txt(name, 120);
     if (!nm) continue;
     const key = `${txt(idc, 20) || nm}|${txt(dir)}`;
-    const g = groups.get(key) || { name: nm, dir: txt(dir), town: txt(town, 80), phone: '', horario: txt(horario), orders: new Set(), obs: new Set(), n: 0, orden: Infinity };
+    const g = groups.get(key) || { name: nm, dir: txt(dir), town: txt(town, 80), phone: '', horario: txt(horario), orders: new Set(), obs: new Set(), n: 0, orden: Infinity, load: null };
     g.n++;
+    // Las APK anteriores a la 1.4.0 no mandan la carga: entonces la parada queda sin ella.
+    if (row.length >= 14) {
+      const n = (v) => (Number.isFinite(+v) && +v > 0 ? Math.min(+v, 10000) : 0);
+      const l = g.load || { boxes: 0, bottles: 0, loose: 0 };
+      l.boxes += n(c2) + n(c35) + n(c611) + n(c12);
+      l.loose += n(loose);
+      l.bottles += n(loose) + 2 * n(c2) + 4 * n(c35) + 6 * n(c611) + 12 * n(c12);
+      g.load = l;
+    }
     if (!g.phone && /\d{6,}/.test(String(phone || '').replace(/\D/g, ''))) g.phone = txt(phone, 40);
     const o = cleanOrderText(txt(order));
     if (o) g.orders.add(o);
@@ -210,6 +225,7 @@ export function parsePortal(text) {
       closed: h.closed,
       // Solo un horario igual todos los días se recuerda como horario del cliente (sin lo del pedido).
       clientWindows: h.byDay ? [] : h.windows,
+      load: g.load,
     };
   });
   return { date, id: txt(p.id, 20), stops };
@@ -243,7 +259,7 @@ function bridge() {
     for (const e of list) {
       const pts = (await post('/Repartos/PuntosEntregaDatos', 'draw=1&start=0&length=-1&paginate=0&id_entrega=' + encodeURIComponent(e.id_entrega))).data || [];
       routes.push([e.fecha, new Set(pts.map((p) => p.id_cliente)).size, JSON.stringify({ ruta: 'escola-portal', v: 1, fecha: e.fecha, id: e.id_entrega,
-        paradas: pts.map((p) => [p.id_cliente, p.razon_social, p.direccion, p.poblacion, p.telefono, p.horario, p.texto_libre_pedido, p.observaciones, p.orden]) })]);
+        paradas: pts.map((p) => [p.id_cliente, p.razon_social, p.direccion, p.poblacion, p.telefono, p.horario, p.texto_libre_pedido, p.observaciones, p.orden, p.botellas, p.cajas_2, p.cajas_3a5, p.cajas_6a11, p.cajas_12mas]) })]);
     }
     say(routes.map((r, i) => '<button data-i=' + i + ' style="display:block;width:100%;margin:8px 0;padding:14px;border:0;border-radius:12px;background:#c9a54c;font-weight:700">Ruta del ' + q(r[0]) + ' · ' + r[1] + ' paradas</button>').join('') + 'Al compartir, elige <b>Ruta</b>.');
     box.querySelectorAll('[data-i]').forEach((b) => {

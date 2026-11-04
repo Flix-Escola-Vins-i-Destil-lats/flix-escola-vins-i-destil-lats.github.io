@@ -137,3 +137,23 @@ test('«EN ADELANTE» en el pedido manda si la ficha del cliente abre más tarde
   assert.deepEqual(r.stops[0].windows, W(['9:30', '21'])); // no «18-21»: el pedido es lo último que se ha dicho
   assert.deepEqual(r.stops[1].windows, W(['11', '14'], ['18', '21'])); // si cabe en la ficha, solo afina
 });
+
+test('carga del pedido: cajas exactas, botellas estimadas por tamaño de caja, y pedido grande', async () => {
+  const { bigOrder } = await import('../js/portal.js');
+  // [.., orden, botellas sueltas, cajas de 2, de 3 a 5, de 6 a 11, de 12 o más]
+  const r = parsePortal(ruta([
+    [1, 'BAR', 'C/ X, 1', 'BARCELONA', '', '', '', '', 1, 38, 0, 0, 11, 0],
+    [1, 'BAR', 'C/ X, 1', 'BARCELONA', '', '', '', '', 2, 11, 0, 2, 5, 0],
+    [2, 'CAFE', 'C/ X, 2', 'BARCELONA', '', '', '', '', 3, 6, 0, 0, 1, 0],
+    [3, 'HOTEL', 'C/ X, 3', 'BARCELONA', '', '', '', '', 4, 0, 0, 0, 31, 0],
+    [4, 'VIEJA', 'C/ X, 4', 'BARCELONA', '', '', '', '', 5], // APK anterior a la 1.4.0: sin carga
+  ]));
+  const [bar, cafe, hotel, vieja] = r.stops;
+  assert.deepEqual(bar.load, { boxes: 18, loose: 49, bottles: 49 + 6 * 16 + 4 * 2 });
+  assert.equal(bigOrder(bar.load), true); // 153 botellas
+  assert.deepEqual(cafe.load, { boxes: 1, loose: 6, bottles: 12 });
+  assert.equal(bigOrder(cafe.load), false);
+  assert.equal(bigOrder(hotel.load), true); // 31 cajas
+  assert.equal(vieja.load, null);
+  assert.equal(bigOrder(null), false);
+});

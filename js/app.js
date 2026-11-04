@@ -2,12 +2,13 @@ import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin } from './parking.js';
+import { bigOrder } from './portal.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.11.0';
+export const VERSION = '1.12.0';
 
 // ---------- Utilidades ----------
 
@@ -107,7 +108,14 @@ function planWindows(x) {
 }
 // Minutos que se llega después del horario del cliente (0 si se llega a tiempo o los horarios están apagados).
 const pastHours = (x, leg) => (leg && settings().useWindows ? serviceStart(leg.arrive, x.windows).lateBy : 0);
-const planStop = (x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: x.service });
+const planStop = (x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: x.service, load: x.load });
+// Carga del pedido (cajas y botellas, del portal). Un pedido grande (+70 botellas o +30 cajas) se marca bien visible.
+function loadChip(x) {
+  const l = x.load;
+  if (!l || (!l.boxes && !l.bottles)) return '';
+  const what = [l.boxes ? plural(l.boxes, 'caja', 'cajas') : '', l.loose ? `${l.loose} sueltas` : ''].filter(Boolean).join(' + ');
+  return bigOrder(l) ? `<span class="chip big">Pedido grande · ${what} · ~${l.bottles} bot.</span>` : `<span class="chip any">${what}</span>`;
+}
 function timingChip(x) {
   if (x.timing === 'strict') return '<span class="chip strict">Estricto</span>';
   if (x.timing === 'flex') return '<span class="chip any">Flexible</span>';
@@ -159,7 +167,7 @@ function mapApi() {
         unlocated: r.stops.filter((x) => !located(x)).length,
         stops: seq.filter(located).map((x) => ({
           id: x.id, name: x.name || x.address, label: x.label || x.address, lat: x.lat, lon: x.lon,
-          windows: x.windows, planWindows: planWindows(x), service: x.service, done: !!x.done, leg: legs.get(x.id) || null,
+          windows: x.windows, planWindows: planWindows(x), service: x.service, load: x.load || null, done: !!x.done, leg: legs.get(x.id) || null,
           nav: navUrl(s.nav, park.find((p) => p.ids.includes(x.id)) || x),
         })),
         parking: park.map((p) => ({ ...p, key: groupKey(p.ids) })),
@@ -260,7 +268,7 @@ function orderedStops(r) {
 }
 
 function stopCard(s, i, leg, extra = '', park = null) {
-  const chips = [windowsChips(s.windows), timingChip(s)];
+  const chips = [loadChip(s), windowsChips(s.windows), timingChip(s)];
   // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible).
   const real = pastHours(s, leg);
   if (s.failed) chips.unshift(`<span class="chip late">No entregado · ${esc(s.failed)}</span>`);
@@ -462,7 +470,7 @@ function renderActive(r) {
       <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
       <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
       ${parkLine}
-      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${windowsChips(cur.windows)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
+      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${loadChip(cur)}${windowsChips(cur.windows)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
         <div><b>${leg ? fmt(leg.arrive) : '--:--'}</b><span>llegada</span></div>
         <div><b>${leg ? Math.round(leg.drive) : '–'}</b><span>min de viaje</span></div>
@@ -1290,6 +1298,12 @@ async function pasteAdd() {
   if (portal) ui.date = portal.date;
   const r = currentRoute();
   const have = new Set(r.stops.map((x) => clientKey(x.name)));
+  if (portal) {
+    for (const it of sh.parsed) {
+      const old = it.load && r.stops.find((x) => clientKey(x.name) === clientKey(it.name));
+      if (old) old.load = it.load;
+    }
+  }
   const items = portal ? sh.parsed.filter((it) => !have.has(clientKey(it.name))) : sh.parsed;
   let n = 0, unlocated = 0;
   for (const it of items) {
@@ -1317,7 +1331,7 @@ async function pasteAdd() {
       store.rememberClient({ ...fields, notes: undefined, windows: it.clientWindows.length ? it.clientWindows : undefined });
       fields.notes = [mem?.notes, it.notes].filter(Boolean).join('\n').slice(0, 500);
     } else store.rememberClient(fields);
-    r.stops.push({ id: uid(), ...fields, done: false });
+    r.stops.push({ id: uid(), ...fields, ...(portal && it.load ? { load: it.load } : {}), done: false });
   }
   if (r.status === 'done') r.status = 'draft';
   store.save();

@@ -3,7 +3,8 @@
 // (sabe dónde suele haber sitio y qué cabe en la carretilla); la app propone dónde dejar la furgoneta.
 // Mapa base: © ICGC (CC BY 4.0) y © OpenStreetMap. Leaflet 1.9.4 (BSD-2-Clause) en vendor/leaflet.
 
-import { spotsFor, spotAt, parkedTime, walkMin, DUM_MINUTES } from './parking.js';
+import { spotsFor, spotAt, parkedTime, walkMin, trips, DUM_MINUTES } from './parking.js';
+import { bigOrder } from './portal.js';
 import { fmt } from './parse.js';
 
 const TILES = 'https://geoserveis.icgc.cat/servei/catalunya/mapa-base/wmts/estandard-gris/MON3857NW/{z}/{x}/{y}.png';
@@ -122,7 +123,7 @@ function draw(fit) {
 
   L.marker(depot, { icon: icon('depot', 'A', 28), keyboard: false, title: 'Almacén' }).addTo(st.layers).bindPopup('<b>Almacén</b>');
   d.stops.forEach((s, i) => {
-    const cls = [s.done ? 'done' : '', s.id === d.current ? 'current' : '', st.selected.includes(s.id) ? 'sel' : '', parkOf(s.id) ? 'grouped' : ''].join(' ');
+    const cls = [s.done ? 'done' : '', s.id === d.current ? 'current' : '', st.selected.includes(s.id) ? 'sel' : '', parkOf(s.id) ? 'grouped' : '', bigOrder(s.load) ? 'big' : ''].join(' ');
     const m = L.marker(ll(s), { icon: icon(cls, String(i + 1)), title: s.name, zIndexOffset: st.selected.includes(s.id) ? 500 : 0 }).addTo(st.layers);
     m.on('click', () => onStop(s, m));
     bounds.push(ll(s));
@@ -194,7 +195,7 @@ function renderPanel() {
   if (st.mode === 'select') {
     const sel = members();
     return panel(`<div class="small">Toca en el mapa las entregas que harás a pie desde un mismo sitio.</div>
-      <div class="small muted" style="margin-top:4px">${sel.length ? esc(sel.map((s) => s.name).join(', ')) : 'Ninguna elegida todavía.'}</div>
+      <div class="small muted" style="margin-top:4px">${sel.length ? sel.map((s) => esc(s.name) + (bigOrder(s.load) ? ' <b class="big-ink">(grande)</b>' : '')).join(', ') : 'Ninguna elegida todavía.'}</div>
       <div class="map-actions"><button class="btn gold" data-map="find"${sel.length < 2 ? ' disabled' : ''}>Buscar dónde aparcar${sel.length >= 2 ? ` (${sel.length})` : ''}</button>
       <button class="btn ghost" data-map="cancel">Cancelar</button></div>`);
   }
@@ -209,7 +210,8 @@ function renderPanel() {
   const lateNames = t ? sel.filter((s) => t.late.includes(s.id)).map((s) => s.name) : [];
   const over = t && sp.dum && t.minutes > DUM_MINUTES;
   panel(`<div class="small">${where}</div>
-    <div class="small muted" style="margin-top:4px">A pie: ${sel.map((s) => `${esc(s.name)} ${Math.max(1, Math.round(walkMin(sp, s)))} min`).join(' · ')}</div>
+    <div class="small muted" style="margin-top:4px">A pie: ${sel.map((s) => `${esc(s.name)} ${Math.max(1, Math.round(walkMin(sp, s)))} min${trips(s) > 1 ? ` × ${trips(s)} viajes` : ''}`).join(' · ')}</div>
+    ${sel.some((s) => bigOrder(s.load)) ? '<div class="tiny faint" style="margin-top:4px">Los pedidos grandes pesan más: el sitio queda más cerca de ellos.</div>' : ''}
     ${t ? `<div class="small ${over ? 'late-ink' : 'muted'}" style="margin-top:4px">Aparcado unos ${Math.round(t.minutes)} min${sp.dum ? ` de los ${DUM_MINUTES} que deja SPRO` : ''}${over ? ': no cabe en una validación' : ''}.</div>` : ''}
     ${lateNames.length ? `<div class="small late-ink" style="margin-top:4px">Llegarías tarde a ${esc(lateNames.join(', '))}.</div>` : ''}
     <div class="map-actions three"><button class="btn gold" data-map="accept">Aceptar</button>
