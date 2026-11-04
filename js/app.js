@@ -8,7 +8,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.12.0';
+export const VERSION = '1.12.1';
 
 // ---------- Utilidades ----------
 
@@ -813,6 +813,9 @@ function sheetPortal(sh) {
   const { date, stops } = sh.portal;
   const have = new Set(store.route(date).stops.map((x) => clientKey(x.name)));
   const fresh = stops.filter((it) => !have.has(clientKey(it.name)));
+  // Paradas que ya estaban pero sin la carga que ahora trae el portal (p. ej. traídas con una APK anterior).
+  const sameLoad = (a, b) => JSON.stringify(a || null) === JSON.stringify(b || null);
+  const reload = stops.filter((it) => it.load && store.route(date).stops.some((x) => clientKey(x.name) === clientKey(it.name) && !sameLoad(x.load, it.load))).length;
   return `<h2 id="sheet-title">Ruta del portal</h2>
     <div class="small muted" style="margin:-6px 0 12px">${esc(dayName(date).long)} · ${stops.length === 1 ? '1 parada' : `${stops.length} paradas`}${fresh.length < stops.length ? ` · ${stops.length - fresh.length} ya estaban en la ruta` : ''}</div>
     <ul class="parsed">${stops.map((it) => {
@@ -820,11 +823,12 @@ function sheetPortal(sh) {
       const dup = have.has(clientKey(it.name));
       return `<li${dup ? ' style="opacity:.55"' : ''}><b>${esc(it.name)}</b>${mem ? ' <span class="chip mem">Recordado</span>' : ''}${dup ? ' <span class="chip any">Ya está</span>' : ''}
         <div class="muted small">${esc(it.address)}</div>
-        <div class="chips" style="margin-top:6px">${it.closed ? '<span class="chip late">Ese día cierra</span>' : ''}${windowsChips(it.windows.length ? it.windows : mem?.windows)}</div></li>`;
+        <div class="chips" style="margin-top:6px">${it.closed ? '<span class="chip late">Ese día cierra</span>' : ''}${loadChip(it)}${windowsChips(it.windows.length ? it.windows : mem?.windows)}</div></li>`;
     }).join('')}</ul>
     <div class="foot">
       ${sh.busy ? `<button class="btn gold big block" disabled><span class="spin"></span>${esc(sh.busy)}</button>`
         : fresh.length ? `<button class="btn gold big block" data-action="paste-add">${fresh.length === 1 ? 'Añadir 1 parada' : `Añadir ${fresh.length} paradas`} · ${esc(dayName(date).rel)}</button>`
+        : reload ? `<button class="btn gold big block" data-action="paste-add">Poner la carga a ${plural(reload, 'parada', 'paradas')}</button>`
         : '<button class="btn gold big block" data-action="close">Ya las tienes todas</button>'}
       <button class="btn ghost block" data-action="close">Cancelar</button>
     </div>`;
@@ -1305,6 +1309,10 @@ async function pasteAdd() {
     }
   }
   const items = portal ? sh.parsed.filter((it) => !have.has(clientKey(it.name))) : sh.parsed;
+  if (portal && !items.length) {
+    store.save(); closeSheet(); render();
+    return toast('Carga puesta en las paradas');
+  }
   let n = 0, unlocated = 0;
   for (const it of items) {
     n++;
