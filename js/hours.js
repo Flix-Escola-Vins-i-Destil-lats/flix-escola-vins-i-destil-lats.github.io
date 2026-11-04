@@ -19,3 +19,11 @@ export function planWindows(windows, timing = '') {
   const extra = timing === 'flex' ? FLEX_EXTRA : 0;
   return ws.map(([a, b]) => [a, Math.min(b + lateOk(b) + extra, LAST)]);
 }
+
+// Horario «de tarde» del portal (todas las franjas empiezan después de las 13:00, p. ej. «16h a 18h»): casi siempre
+// es un error de la ficha. Se avisa y se planifica como si aceptara desde las 10:00, hasta que el conductor llame al
+// cliente y apunte su horario confirmado.
+export const ODD_AFTER = 13 * 60;
+export const ODD_FROM = 10 * 60;
+export const oddHours = (windows) => !!windows?.length && windows.every(([a]) => a > ODD_AFTER);
+export const ODD_WINDOWS = [[ODD_FROM, LAST]];

@@ -134,6 +134,8 @@ export function sanitizeClient(c) {
     visits: int(c.visits, 0, 100000, 0),
     lastVisit: /^\d{4}-\d{2}-\d{2}$/.test(c.lastVisit) ? c.lastVisit : undefined,
     needsCheck: !!c.needsCheck,
+    // El conductor ha confirmado el horario llamando al cliente: el del portal ya no lo cambia.
+    windowsConfirmed: !!c.windowsConfirmed,
     serviceLog: Array.isArray(c.serviceLog) ? c.serviceLog.map((m) => int(m, 1, 120, 0)).filter(Boolean).slice(-8) : [],
     serviceLearned: !!c.serviceLearned,
     updatedAt: Math.min(int(c.updatedAt, 0, Number.MAX_SAFE_INTEGER, 0), Date.now()),

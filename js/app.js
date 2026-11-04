@@ -3,12 +3,13 @@ import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, traffic
 import { computePlan } from './planner.js';
 import { groupKey, walkMin } from './parking.js';
 import { bigOrder } from './portal.js';
+import { oddHours, ODD_WINDOWS } from './hours.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.12.2';
+export const VERSION = '1.13.0';
 
 // ---------- Utilidades ----------
 
@@ -102,12 +103,17 @@ function dayName(iso) {
 // Con el horario: se planifica con margen (media hora si cierra por la mañana, una hora si cierra a mediodía o
 // más tarde; ver hours.js). Estricto: sin margen; flexible: media hora más. En la ficha se guarda su horario de verdad.
 const TIMING = [['strict', 'Estricto'], ['', 'Normal'], ['flex', 'Flexible']];
+// Horario raro: solo de tarde (todo después de las 13:00) y sin confirmar con el cliente. Se planifica desde las 10:00.
+const odd = (x) => !x.windowsConfirmed && oddHours(x.windows);
+const realWindows = (x) => (odd(x) ? ODD_WINDOWS : x.windows);
 function planWindows(x) {
   if (!settings().useWindows) return []; // horarios apagados en Ajustes: solo cercanía y tráfico
+  if (odd(x)) return ODD_WINDOWS;
   return marginWindows(x.windows, x.timing);
 }
 // Minutos que se llega después del horario del cliente (0 si se llega a tiempo o los horarios están apagados).
-const pastHours = (x, leg) => (leg && settings().useWindows ? serviceStart(leg.arrive, x.windows).lateBy : 0);
+const pastHours = (x, leg) => (leg && settings().useWindows ? serviceStart(leg.arrive, realWindows(x)).lateBy : 0);
+const oddChip = (x) => (odd(x) ? '<span class="chip late">Horario raro · llama al cliente</span>' : '');
 const planStop = (x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: x.service, load: x.load });
 // Carga del pedido (cajas y botellas, del portal). Un pedido grande (+70 botellas o +30 cajas) se marca bien visible.
 function loadChip(x) {
@@ -198,7 +204,7 @@ function currentRoute() { return store.route(ui.date); }
 function signature(r) {
   return JSON.stringify([
     settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey, !!settings().useWindows,
-    r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, s.service, s.timing || '']),
+    r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, s.service, s.timing || '', !!s.windowsConfirmed]),
     parkingFor(r).map((p) => [p.ids, p.lat, p.lon]),
   ]);
 }
@@ -268,7 +274,7 @@ function orderedStops(r) {
 }
 
 function stopCard(s, i, leg, extra = '', park = null) {
-  const chips = [loadChip(s), windowsChips(s.windows), timingChip(s)];
+  const chips = [loadChip(s), windowsChips(s.windows), oddChip(s), timingChip(s)];
   // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible).
   const real = pastHours(s, leg);
   if (s.failed) chips.unshift(`<span class="chip late">No entregado · ${esc(s.failed)}</span>`);
@@ -381,6 +387,8 @@ function renderPlanning(r) {
       const m = x ? pastHours(x, l) : 0;
       return m > 0.5 ? `${esc(x.name)} (+${Math.round(m)} min)` : '';
     }).filter(Boolean);
+    const odds = r.stops.filter((x) => !x.done && odd(x));
+    if (odds.length && s.useWindows) html += `<div class="notice warn">${I.warn}<div>Horario de tarde que parece un error en ${odds.map((x) => `<b>${esc(x.name)}</b> (${x.windows.map(([a, b]) => `${fmt(a)}–${fmt(b)}`).join(', ')})`).join(', ')}. Lo trato como si aceptara desde las 10:00. Llama al cliente y apunta en su ficha el horario de verdad.</div></div>`;
     if (inMargin.length) html += `<div class="notice warn">${I.info}<div>Llegas después de su horario, dentro del margen, a ${inMargin.join(', ')}. Si alguno es estricto, márcalo en su ficha.</div></div>`;
     if (!s.useWindows) html += `<div class="notice gold">${I.info}<div>Horarios de los clientes apagados: el orden sale por cercanía y tráfico. Se encienden en <button class="linkbtn" data-action="tab" data-tab="settings" style="color:inherit">Ajustes</button>.</div></div>`;
     const at = p.computedAt ? ` Calculada ${store.isoDate(new Date(p.computedAt)) === todayIso() ? 'hoy' : 'el ' + new Date(p.computedAt).toLocaleDateString('es-ES')} a las ${fmt(minOfDay(p.computedAt))}.` : '';
@@ -460,7 +468,7 @@ function renderActive(r) {
 
   if (cur) {
     const leg = legs.get(cur.id);
-    const ws = windowState(cur.windows, leg ? leg.arrive : nowMin());
+    const ws = windowState(realWindows(cur), leg ? leg.arrive : nowMin());
     const park = parkingOf(r, cur.id);
     const parkLine = !park ? '' : leg?.foot
       ? `<div class="notice compact info" style="margin:12px 0 0">${I.pin}<div>Desde la furgoneta, a pie: ${Math.max(1, Math.round(walkMin(park, cur)))} min.</div></div>`
@@ -470,7 +478,7 @@ function renderActive(r) {
       <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
       <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
       ${parkLine}
-      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${loadChip(cur)}${windowsChips(cur.windows)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
+      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${loadChip(cur)}${windowsChips(cur.windows)}${oddChip(cur)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
         <div><b>${leg ? fmt(leg.arrive) : '--:--'}</b><span>llegada</span></div>
         <div><b>${leg ? Math.round(leg.drive) : '–'}</b><span>min de viaje</span></div>
@@ -749,6 +757,8 @@ function sheetStop(sh) {
       </div>`).join('')}
     </div>
     ${d.windows.length ? '' : '<div class="hint">Sin horario: se le puede entregar a cualquier hora.</div>'}
+    ${oddHours(d.windows) && !d.windowsConfirmed ? `<div class="notice warn" style="margin:10px 0 0">${I.warn}<div>Este horario de tarde parece un error del portal: de momento lo trato como si aceptara desde las 10:00. Llama al cliente, pon aquí arriba el horario que te diga y marca «Confirmado».</div></div>` : ''}
+    <label class="toggle confirm"><span>Confirmado con el cliente<span class="tiny faint" style="display:block">${d.windowsConfirmed ? 'Este horario manda: el del portal ya no lo cambia.' : 'Márcalo cuando lo hayas hablado con él: la próxima vez saldrá este horario, no el del portal.'}</span></span><input type="checkbox" id="f-confirmed" ${d.windowsConfirmed ? 'checked' : ''}></label>
     <div class="presets">
       <button data-action="add-window" data-a="09:00" data-b="13:00">+ 9:00–13:00</button>
       <button data-action="add-window" data-a="10:00" data-b="13:00">+ 10:00–13:00</button>
@@ -823,7 +833,7 @@ function sheetPortal(sh) {
       const dup = have.has(clientKey(it.name));
       return `<li${dup ? ' style="opacity:.55"' : ''}><b>${esc(it.name)}</b>${mem ? ' <span class="chip mem">Recordado</span>' : ''}${dup ? ' <span class="chip any">Ya está</span>' : ''}
         <div class="muted small">${esc(it.address)}</div>
-        <div class="chips" style="margin-top:6px">${it.closed ? '<span class="chip late">Ese día cierra</span>' : ''}${loadChip(it)}${windowsChips(it.windows.length ? it.windows : mem?.windows)}</div></li>`;
+        <div class="chips" style="margin-top:6px">${it.closed ? '<span class="chip late">Ese día cierra</span>' : ''}${loadChip(it)}${mem?.windowsConfirmed ? `${windowsChips(mem.windows)}<span class="chip mem">Horario confirmado</span>` : `${windowsChips(it.windows.length ? it.windows : mem?.windows)}${oddHours(it.windows) ? '<span class="chip late">Horario raro</span>' : ''}`}</div></li>`;
     }).join('')}</ul>
     <div class="foot">
       ${sh.busy ? `<button class="btn gold big block" disabled><span class="spin"></span>${esc(sh.busy)}</button>`
@@ -860,6 +870,7 @@ function syncDraft() {
   if ($('#f-service')) d.service = Math.min(180, Math.max(1, parseInt(v('#f-service'), 10) || settings().service));
   if ($('#f-phone')) d.phone = v('#f-phone').trim();
   if ($('#f-notes')) d.notes = v('#f-notes').trim();
+  if ($('#f-confirmed')) d.windowsConfirmed = $('#f-confirmed').checked;
   document.querySelectorAll('[data-win]').forEach((inp) => {
     const i = +inp.dataset.win, end = +inp.dataset.end;
     const m = toMin(inp.value);
@@ -887,6 +898,7 @@ function stopDraft(src = {}) {
     windows: (src.windows || []).map((w) => [...w]),
     service: src.service ?? settings().service,
     timing: src.timing || '',
+    windowsConfirmed: !!src.windowsConfirmed,
     phone: src.phone || '', notes: src.notes || '',
     needsCheck: !!src.needsCheck,
   };
@@ -938,6 +950,7 @@ function fillFromMemory() {
   if (!d.windows.length && mem.windows?.length) d.windows = mem.windows.map((w) => [...w]);
   d.service = mem.service ?? d.service;
   d.timing = d.timing || mem.timing || '';
+  if (mem.windowsConfirmed && mem.windows?.length) { d.windows = mem.windows.map((w) => [...w]); d.windowsConfirmed = true; }
   d.phone = d.phone || mem.phone || '';
   d.notes = d.notes || mem.notes || '';
   d.name = mem.name;
@@ -950,7 +963,7 @@ function stopFields(d) {
   return {
     name: d.name, address: d.address,
     lat: loc ? d.lat : null, lon: loc ? d.lon : null, label: loc ? d.label || '' : '',
-    windows: d.windows, service: d.service, timing: d.timing || '', phone: d.phone, notes: d.notes,
+    windows: d.windows, windowsConfirmed: !!d.windowsConfirmed && d.windows.length > 0, service: d.service, timing: d.timing || '', phone: d.phone, notes: d.notes,
     needsCheck: loc ? !!d.needsCheck : false,
   };
 }
@@ -1321,7 +1334,8 @@ async function pasteAdd() {
     const mem = store.findClient(it.name);
     const stop = stopDraft(mem || {});
     stop.name = (mem?.name || it.name).slice(0, 120);
-    if (it.windows.length) stop.windows = it.windows;
+    if (mem?.windowsConfirmed && mem.windows?.length) stop.windows = mem.windows.map((w) => [...w]);
+    else if (it.windows.length) stop.windows = it.windows;
     if (it.phone) stop.phone = it.phone;
     const addressChanged = it.address && clientKey(it.address) !== clientKey(mem?.address || '');
     if (it.address) stop.address = it.address;
@@ -1336,7 +1350,8 @@ async function pasteAdd() {
     const fields = stopFields(stop);
     if (portal) {
       // Del portal se recuerda dónde está y el teléfono; el horario solo si vale para todos los días.
-      store.rememberClient({ ...fields, notes: undefined, windows: it.clientWindows.length ? it.clientWindows : undefined });
+      store.rememberClient({ ...fields, notes: undefined, windowsConfirmed: undefined,
+        windows: mem?.windowsConfirmed || !it.clientWindows.length ? undefined : it.clientWindows });
       fields.notes = [mem?.notes, it.notes].filter(Boolean).join('\n').slice(0, 500);
     } else store.rememberClient(fields);
     r.stops.push({ id: uid(), ...fields, ...(portal && it.load ? { load: it.load } : {}), done: false });
@@ -1459,6 +1474,7 @@ document.addEventListener('click', (e) => {
 document.addEventListener('change', (e) => {
   const t = e.target;
   if (t.id === 'f-name') fillFromMemory();
+  if (t.id === 'f-confirmed' && ui.sheet?.draft) { syncDraft(); renderSheet(); }
   if (t.id === 'f-address' && ui.sheet?.draft) {
     // Sin redibujar, para no perder el toque en "buscar".
     setDraftAddress(ui.sheet, t.value.trim());

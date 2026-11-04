@@ -28,3 +28,13 @@ test('nunca pasa de medianoche y sin horario sigue sin horario', () => {
   assert.deepEqual(planWindows([]), []);
   assert.deepEqual(planWindows(undefined), []);
 });
+
+test('horario de tarde sospechoso: todas las franjas empiezan después de las 13:00', async () => {
+  const { oddHours, ODD_WINDOWS } = await import('../js/hours.js');
+  assert.equal(oddHours(W(['16', '18'])), true);
+  assert.equal(oddHours(W(['18', '21'])), true);
+  assert.equal(oddHours(W(['13', '15'])), false); // a las 13 justas todavía es mediodía
+  assert.equal(oddHours(W(['9', '12'], ['19', '20'])), false); // tiene franja de mañana
+  assert.equal(oddHours([]), false);
+  assert.deepEqual(ODD_WINDOWS, [[h('10'), 23 * 60 + 59]]);
+});
