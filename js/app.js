@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.13.0';
+export const VERSION = '1.13.1';
 
 // ---------- Utilidades ----------
 
@@ -723,7 +723,7 @@ function renderSheet() {
 function candidatesHtml(sh) {
   if (sh.searching) return '<div class="muted small" style="margin:-4px 0 14px" role="status"><span class="spin inline"></span> Buscando…</div>';
   if (sh.candidates?.length) {
-    return `<div class="candidates">${sh.candidates.map((c, i) => `<button class="cand ${sh.picked === i ? 'on' : ''}" data-action="pick" data-i="${i}" aria-pressed="${sh.picked === i}">${I.pin}<span>${esc(c.label)}${c.doubt ? `<span class="doubt">${c.otherTown ? 'Otra población' : 'Otra calle'}: compruébala</span>` : ''}</span></button>`).join('')}</div>`;
+    return `<div class="candidates">${sh.candidates.map((c, i) => `<button class="cand ${sh.picked === i ? 'on' : ''}" data-action="pick" data-i="${i}" aria-pressed="${sh.picked === i}">${I.pin}<span>${esc(c.label)}${c.doubt ? `<span class="doubt">${c.otherTown ? 'Otra población' : c.otherNumber ? 'Otro número' : 'Otra calle'}: compruébala</span>` : ''}</span></button>`).join('')}</div>`;
   }
   if (sh.candidates && !sh.candidates.length) return '<div class="hint" style="color:var(--warn)">No he encontrado esa dirección. Prueba con calle, número y población, o pega un enlace de Google Maps.</div>';
   return '';

@@ -58,13 +58,23 @@ const TOWN_ES_CA = {
   'pallejà': 'Pallejà', 'palleja': 'Pallejà', 'badalona': 'Badalona', 'barcelona': 'Barcelona',
 };
 
+const LOCAL_PART = /^\s*(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala)\b/i;
+const DISTRICTS = new Set(['ciutat vella', 'eixample', 'sants montjuic', 'les corts', 'sarria sant gervasi', 'gracia',
+  'horta guinardo', 'nou barris', 'sant andreu', 'sant marti']);
+
 export function normalizeAddress(q) {
   let s = String(q || '').trim().replace(/\s+/g, ' ');
   for (const [re, rep] of TYPE_ES_CA) s = s.replace(re, rep);
+  // Los tramos de la Rambla (Canaletes, Caputxins, Santa Mònica…) son una sola calle con una sola numeración
+  // en el callejero: «Rambla dels Caputxins 31» no la encuentra nadie; «La Rambla 31» sí.
+  s = s.replace(/^\s*(?:la\s+)?rambla\s+(?:de\s+les\s+|de\s+la\s+|dels?\s+|de\s+)?(?:canaletes|estudis|sant\s+josep|caputxins|santa\s+m[oò]nica|flors)\b/i, 'La Rambla');
   s = s.replace(/ de las /gi, ' de les ').replace(/ de los /gi, ' dels ').replace(/\bn[ºo°]\.?\s*/gi, '');
   // Lo que va tras el número es del local ("75 LOCAL 2", "12 BAJOS", "3 PISO 2"): los buscadores no lo
   // entienden y no devuelven nada. Se busca el portal.
-  const parts = s.split(',').map((p) => p.replace(/(\b\d+\s*[a-z]?)\s+(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala)\b.*$/i, '$1'));
+  const parts = s.split(',').map((p) => p.replace(/(\b\d+\s*[a-z]?)\s+(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala)\b.*$/i, '$1'))
+    // Lo mismo en un trozo aparte ("25, LOCAL IZQUIERDA", "54, BAJOS") y el distrito metido en medio
+    // ("31, CIUTAT VELLA, BARCELONA"): con eso el buscador no encuentra nada o da el número de enfrente.
+    .filter((p, i, all) => i === 0 || i === all.length - 1 || !(LOCAL_PART.test(p) || DISTRICTS.has(fold(p).replace(/[^a-z]+/g, ' ').trim())));
   if (parts.length > 1) {
     const town = TOWN_ES_CA[fold(parts[parts.length - 1])];
     if (town) parts[parts.length - 1] = ` ${town}`;
@@ -150,8 +160,19 @@ async function nominatim(q) {
 /**
  * Devuelve candidatos [{lat, lon, label, source, otherTown, doubt}] del más fiable al menos.
  * kind 'address' (por defecto): ICGC → CartoCiudad → OpenStreetMap. kind 'name': un local por su nombre (OpenStreetMap).
- * otherTown: no está en la población escrita. doubt: otra población u otra calle; hay que revisarlo.
+ * otherTown: no está en la población escrita. otherNumber: otro portal. doubt: otra población, calle o número; hay que revisarlo.
  */
+// Números de portal de una dirección («6-8» → [6, 8]), sin el código postal.
+const numbersOf = (s) => (String(s).match(/\b\d{1,4}\b(?:\s*-\s*\d{1,4}\b)?/g) || []).map((n) => n.split('-').map((x) => +x));
+/** ¿El resultado es el portal buscado? Un buscador puede dar la calle buena con otro número (la otra acera, otra punta). */
+export function sameNumber(query, label) {
+  const want = numbersOf(String(query).split(',').slice(0, -1).join(',') || query);
+  const got = numbersOf(label);
+  if (!want.length || !got.length) return true;
+  const inRange = (n, [a, b = a]) => n >= Math.min(a, b) && n <= Math.max(a, b);
+  return want.some((w) => got.some((g) => w.some((n) => inRange(n, g)) || g.some((n) => inRange(n, w))));
+}
+
 export async function geocode(query, { kind = 'address' } = {}) {
   const raw = String(query || '').trim();
   if (!raw) return [];
@@ -162,7 +183,8 @@ export async function geocode(query, { kind = 'address' } = {}) {
   const words = kind === 'name' ? [] : streetWords(normalizeAddress(raw));
   const mark = (list) => list.map((c) => {
     const otherTown = !sameTown(want, c.town || c.label);
-    return { ...c, otherTown, doubt: otherTown || !sameStreet(words, c.label) };
+    const otherNumber = kind !== 'name' && !sameNumber(normalizeAddress(raw), c.label);
+    return { ...c, otherTown, otherNumber, doubt: otherTown || otherNumber || !sameStreet(words, c.label) };
   });
   if (kind === 'name') return mark(await nominatim(raw));
 
