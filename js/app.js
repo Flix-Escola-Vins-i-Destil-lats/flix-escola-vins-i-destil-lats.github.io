@@ -2,11 +2,12 @@ import { parseList, fmt, toMin, clientKey } from './parse.js';
 import { geocode, navUrl, currentPosition, coordsFromText, travelMatrix, trafficLegs } from './geo.js';
 import { computePlan } from './planner.js';
 import { groupKey, walkMin } from './parking.js';
+import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.10.0';
+export const VERSION = '1.11.0';
 
 // ---------- Utilidades ----------
 
@@ -97,17 +98,15 @@ function dayName(iso) {
   return { rel: rel || long.split(',')[0], long };
 }
 
-// Con el horario: a un cliente estricto se le planifica con margen antes de que cierre; a uno flexible se le
-// puede llegar un poco después. En la ficha se guarda su horario de verdad.
+// Con el horario: se planifica con margen (media hora si cierra por la mañana, una hora si cierra a mediodía o
+// más tarde; ver hours.js). Estricto: sin margen; flexible: media hora más. En la ficha se guarda su horario de verdad.
 const TIMING = [['strict', 'Estricto'], ['', 'Normal'], ['flex', 'Flexible']];
-const STRICT_MARGIN = 10, FLEX_EXTRA = 30;
 function planWindows(x) {
   if (!settings().useWindows) return []; // horarios apagados en Ajustes: solo cercanía y tráfico
-  const ws = x.windows || [];
-  if (x.timing === 'strict') return ws.map(([a, b]) => [a, Math.max(a + 10, b - STRICT_MARGIN)]);
-  if (x.timing === 'flex') return ws.map(([a, b]) => [a, Math.min(b + FLEX_EXTRA, 23 * 60 + 59)]);
-  return ws;
+  return marginWindows(x.windows, x.timing);
 }
+// Minutos que se llega después del horario del cliente (0 si se llega a tiempo o los horarios están apagados).
+const pastHours = (x, leg) => (leg && settings().useWindows ? serviceStart(leg.arrive, x.windows).lateBy : 0);
 const planStop = (x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: planWindows(x), service: x.service });
 function timingChip(x) {
   if (x.timing === 'strict') return '<span class="chip strict">Estricto</span>';
@@ -263,9 +262,9 @@ function orderedStops(r) {
 function stopCard(s, i, leg, extra = '', park = null) {
   const chips = [windowsChips(s.windows), timingChip(s)];
   // Lo de llegar tarde se dice respecto a su horario de verdad (el plan usa el margen de estricto/flexible).
-  const real = leg && settings().useWindows ? serviceStart(leg.arrive, s.windows).lateBy : 0;
+  const real = pastHours(s, leg);
   if (s.failed) chips.unshift(`<span class="chip late">No entregado · ${esc(s.failed)}</span>`);
-  else if (real > 0.5 && !(leg?.late > 0.5)) chips.push(`<span class="chip wait">${Math.round(real)} min tarde · flexible</span>`);
+  else if (real > 0.5 && !(leg?.late > 0.5)) chips.push(`<span class="chip wait">${Math.round(real)} min tarde · en el margen</span>`);
   else if (leg?.late > 0.5) chips.push(`<span class="chip late">${real > 0.5 ? lateText(real) : 'Sin margen · estricto'}</span>`);
   else if (leg?.wait > 4) chips.push(`<span class="chip wait">Espera ${Math.round(leg.wait)} min</span>`);
   if (park && !s.done) chips.push(leg?.foot ? `<span class="chip park">A pie desde la furgoneta</span>` : `<span class="chip park">${I.pin}Aparca: ${esc(park.label || 'punto medio')}</span>`);
@@ -367,8 +366,14 @@ function renderPlanning(r) {
     </div>`;
     if (p.late > 0.5) {
       const lateOnes = p.legs.filter((l) => l.late > 0.5).map((l) => r.stops.find((x) => x.id === l.id)?.name).filter(Boolean);
-      html += `<div class="notice warn">${I.warn}<div>No da tiempo a llegar dentro del horario a <b>${esc(lateOnes.join(', '))}</b>. Revisa sus horarios o avisa al cliente.</div></div>`;
+      html += `<div class="notice warn">${I.warn}<div>Ni con el margen da tiempo a llegar a <b>${esc(lateOnes.join(', '))}</b>. Revisa sus horarios o avisa al cliente.</div></div>`;
     }
+    const inMargin = p.legs.filter((l) => !(l.late > 0.5)).map((l) => {
+      const x = r.stops.find((y) => y.id === l.id);
+      const m = x ? pastHours(x, l) : 0;
+      return m > 0.5 ? `${esc(x.name)} (+${Math.round(m)} min)` : '';
+    }).filter(Boolean);
+    if (inMargin.length) html += `<div class="notice warn">${I.info}<div>Llegas después de su horario, dentro del margen, a ${inMargin.join(', ')}. Si alguno es estricto, márcalo en su ficha.</div></div>`;
     if (!s.useWindows) html += `<div class="notice gold">${I.info}<div>Horarios de los clientes apagados: el orden sale por cercanía y tráfico. Se encienden en <button class="linkbtn" data-action="tab" data-tab="settings" style="color:inherit">Ajustes</button>.</div></div>`;
     const at = p.computedAt ? ` Calculada ${store.isoDate(new Date(p.computedAt)) === todayIso() ? 'hoy' : 'el ' + new Date(p.computedAt).toLocaleDateString('es-ES')} a las ${fmt(minOfDay(p.computedAt))}.` : '';
     html += `<div class="notice info">${I.info}<div>Con ${p.source === 'tomtom' ? (p.live ? 'el tráfico de ese momento' : 'el tráfico previsto para esa hora') : p.source === 'ors' ? 'tiempos de conducción reales y tráfico estimado por hora' : 'distancias aproximadas: añade la clave gratuita de rutas en Ajustes para tiempos reales'}. Salida ${fmt(p.startMin)} desde el almacén.${at}</div></div>`;
@@ -457,7 +462,7 @@ function renderActive(r) {
       <h2 id="now-name" class="clamp2">${esc(cur.name || cur.address)}</h2>
       <div class="addr clamp2">${esc(cur.label || cur.address || '')}</div>
       ${parkLine}
-      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${windowsChips(cur.windows)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(leg.late)}</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
+      <div class="chips" style="margin-top:10px">${dumChip(r, cur)}${windowsChips(cur.windows)}${timingChip(cur)}${leg?.late > 0.5 ? `<span class="chip late solid">${lateText(pastHours(cur, leg) || leg.late)}</span>` : pastHours(cur, leg) > 0.5 ? `<span class="chip wait">${Math.round(pastHours(cur, leg))} min tarde · en el margen</span>` : ''}${leg?.wait > 4 ? `<span class="chip wait">Abre a las ${fmt(leg.begin)}</span>` : ''}</div>
       <div class="facts">
         <div><b>${leg ? fmt(leg.arrive) : '--:--'}</b><span>llegada</span></div>
         <div><b>${leg ? Math.round(leg.drive) : '–'}</b><span>min de viaje</span></div>
@@ -590,7 +595,7 @@ function renderSettings() {
   <div class="card">
     <label class="field"><span>Hora de inicio</span><input class="input" type="time" id="set-shift" value="${esc(s.shiftStart)}"></label>
     <label class="field"><span>Minutos de descarga por parada (por defecto)</span><input class="input" type="number" inputmode="numeric" min="1" max="90" id="set-service" value="${esc(s.service)}"></label>
-    <label class="toggle"><span>Tener en cuenta los horarios de los clientes<span class="tiny faint" style="display:block">${s.useWindows ? 'Ordena la ruta para llegar dentro del horario de cada cliente.' : 'Apagado: el orden sale por cercanía y tráfico. Los horarios se siguen viendo en cada parada.'}</span></span><input type="checkbox" id="set-windows" ${s.useWindows ? 'checked' : ''}></label>
+    <label class="toggle"><span>Tener en cuenta los horarios de los clientes<span class="tiny faint" style="display:block">${s.useWindows ? `Con margen: ${LATE_OK_MORNING} min si cierra por la mañana, ${LATE_OK_AFTERNOON} min si cierra a mediodía o más tarde. La app avisa cuando lo usa.` : 'Apagado: el orden sale por cercanía y tráfico. Los horarios se siguen viendo en cada parada.'}</span></span><input type="checkbox" id="set-windows" ${s.useWindows ? 'checked' : ''}></label>
     <label class="toggle"><span>Volver al almacén al acabar<span class="tiny faint" style="display:block">Cuenta el regreso al calcular la ruta</span></span><input type="checkbox" id="set-return" ${s.returnToDepot ? 'checked' : ''}></label>
     <div class="toggle" style="border:0;padding-bottom:0"><span>Navegar con</span>
       <span class="seg"><button data-action="nav-app" data-v="waze" class="${s.nav === 'waze' ? 'on' : ''}" aria-pressed="${s.nav === 'waze'}">Waze</button><button data-action="nav-app" data-v="gmaps" class="${s.nav === 'gmaps' ? 'on' : ''}" aria-pressed="${s.nav === 'gmaps'}">Google Maps</button></span>
@@ -747,8 +752,9 @@ function sheetStop(sh) {
     <div class="seg timing" role="group" aria-labelledby="timing-label">
       ${TIMING.map(([v, l]) => `<button data-action="timing" data-v="${v}" class="${(d.timing || '') === v ? 'on' : ''}" aria-pressed="${(d.timing || '') === v}">${l}</button>`).join('')}
     </div>
-    <div class="hint">${d.timing === 'strict' ? `Planifico para llegar al menos ${STRICT_MARGIN} min antes de que cierre.`
-      : d.timing === 'flex' ? `Si hace falta, puedo llegar hasta ${FLEX_EXTRA} min después de su horario.` : 'Dentro de su horario, sin margen extra.'}</div>
+    <div class="hint">${d.timing === 'strict' ? `Sin margen: planifico para llegar al menos ${STRICT_MARGIN} min antes de que cierre.`
+      : d.timing === 'flex' ? `Margen ampliado: hasta ${LATE_OK_MORNING + FLEX_EXTRA} min tarde si cierra por la mañana y ${LATE_OK_AFTERNOON + FLEX_EXTRA} min si cierra a mediodía o más tarde.`
+      : `Margen normal: hasta ${LATE_OK_MORNING} min tarde si cierra por la mañana y ${LATE_OK_AFTERNOON} min si cierra a mediodía o más tarde. Siempre te aviso.`}</div>
 
     <div class="input-row">
       <label class="field" style="flex:1"><span>Descarga (min)</span><input class="input" type="number" inputmode="numeric" id="f-service" value="${esc(d.service ?? settings().service)}" min="1" max="120"></label>

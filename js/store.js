@@ -19,9 +19,9 @@ const empty = () => ({
     shiftStart: '07:30',
     service: 10,
     returnToDepot: true,
-    // Horarios de entrega de los clientes al ordenar la ruta. Apagado de momento (03/11/2026): hasta comprobar
-    // en la calle que los horarios del portal son fiables, el orden sale por cercanía y tráfico.
-    useWindows: false,
+    // Horarios de entrega de los clientes al ordenar la ruta (con margen, ver hours.js). Se apagan en Ajustes.
+    useWindows: true,
+    hoursV: 2,
     nav: 'waze',
     leaveIn: 10,
   },
@@ -46,7 +46,10 @@ function load() {
       const clean = sanitizeClient(c);
       if (clean) clients[clean.key] = clean;
     }
-    return { ...base, ...data, clients, settings: { ...base.settings, ...(data.settings || {}) } };
+    const settings = { ...base.settings, ...(data.settings || {}) };
+    // 04/11/2026: los horarios, que estaban apagados (1.9.0), vuelven encendidos y con margen.
+    if (data.settings?.hoursV !== 2) Object.assign(settings, { useWindows: true, hoursV: 2 });
+    return { ...base, ...data, clients, settings };
   } catch {
     // Antes de empezar de cero, se aparta lo que había para poder recuperarlo a mano.
     try { if (raw) localStorage.setItem(`${KEY}-dañado-${Date.now()}`, raw); } catch { /* sin espacio */ }
