@@ -27,6 +27,26 @@ test('los tramos de la Rambla se buscan como «La Rambla» (en el callejero es u
   assert.match(normalizeAddress('RAMBLA DEL RAVAL 9, BARCELONA'), /RAVAL/); // otra rambla: no se toca
 });
 
+test('«Av» sin punto es Avinguda, y la nave de un polígono no se busca', () => {
+  assert.equal(normalizeAddress('Av Riera 10-12 nave 4, SANT BOI DE LLOBREGAT'), 'Avinguda Riera 10-12, SANT BOI DE LLOBREGAT');
+  assert.equal(normalizeAddress('CARRER FERRO, 7, NAU 2, GAVA'), 'CARRER FERRO, 7, Gavà');
+  assert.match(normalizeAddress('AVDA. SOL 3, NAVES 1-2, GAVA'), /^Avinguda SOL 3, Gavà$/);
+  assert.match(normalizeAddress('Avila 5, Barcelona'), /^Avila 5/); // una calle que empieza por «Av» no se toca
+  assert.match(normalizeAddress('CARRER NAVAS, 9, BARCELONA'), /NAVAS, 9/);
+});
+
+test('el centro comercial delante de la calle se quita («C.C.X- calle, número»)', () => {
+  assert.equal(normalizeAddress('C.C.SOLAR- CARRER LLUNA, 75, BARCELONA'), 'CARRER LLUNA, 75, Barcelona');
+  assert.equal(normalizeAddress('C.C. SOLAR - Avda. Lluna 4, Gavà'), 'Avinguda Lluna 4, Gavà');
+  assert.equal(normalizeAddress('CENTRO COMERCIAL SOLAR, CARRER LLUNA, 75, BARCELONA'), 'CARRER LLUNA, 75, Barcelona');
+  assert.match(normalizeAddress('C. Major 4, Barcelona'), /^Carrer Major 4/); // «C.» solo sigue siendo Carrer
+});
+
+test('en L\'Hospitalet la Gran Via es la «Avinguda de la Gran Via» (con solo «Gran Via» el buscador da otra)', () => {
+  assert.equal(normalizeAddress('GRAN VIA, 75, HOSPITALET DE LLOBREGAT'), "Avinguda de la Gran Via, 75, L'Hospitalet de Llobregat");
+  assert.match(normalizeAddress('GRAN VIA, 580, BARCELONA'), /^GRAN VIA, 580/); // en Barcelona ya la encuentra
+});
+
 test('el número del resultado tiene que ser el buscado (o caer en su tramo «6-10»)', () => {
   assert.equal(sameNumber('VIA LAIETANA 54, Barcelona', 'Via Laietana 53, Barcelona'), false);
   assert.equal(sameNumber('La Rambla, 31, Barcelona', 'Paseo Dels Caputxins 11, Barcelona'), false);

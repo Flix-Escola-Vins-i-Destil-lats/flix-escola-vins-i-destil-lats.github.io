@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.13.2';
+export const VERSION = '1.13.3';
 
 // ---------- Utilidades ----------
 

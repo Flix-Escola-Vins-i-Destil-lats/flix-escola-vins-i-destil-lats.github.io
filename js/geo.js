@@ -44,7 +44,7 @@ const fold = (s) => String(s || '').toLowerCase().normalize('NFD').replace(/[̀-
 
 // Los nombres oficiales están en catalán: "Calle Mayor, Esplugas" no lo encuentra, "Carrer Major, Esplugues" sí.
 const TYPE_ES_CA = [
-  [/^(c\/|c\.|cl\.|calle)\s*/i, 'Carrer '], [/^(avda\.?|avenida|av\.)\s*/i, 'Avinguda '], [/^(paseo|pg\.|pº)\s*/i, 'Passeig '],
+  [/^(c\/|c\.|cl\.|calle)\s*/i, 'Carrer '], [/^(avda\.?|avenida|av\.|av(?=\s))\s*/i, 'Avinguda '], [/^(paseo|pg\.|pº)\s*/i, 'Passeig '],
   [/^(plaza|pl\.|pza\.?)\s*/i, 'Plaça '], [/^(rbla\.)\s*/i, 'Rambla '], [/^(ctra\.?)\s*/i, 'Carretera '], [/^(trav\.|travesera)\s*/i, 'Travessera '],
   [/^(ptge\.|pasaje)\s*/i, 'Passatge '], [/^plazoleta\s*/i, 'Placeta '],
 ];
@@ -58,12 +58,19 @@ const TOWN_ES_CA = {
   'pallejà': 'Pallejà', 'palleja': 'Pallejà', 'badalona': 'Badalona', 'barcelona': 'Barcelona',
 };
 
-const LOCAL_PART = /^\s*(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala)\b/i;
+// Lo que es del local y no del portal: los buscadores no lo entienden y no devuelven nada.
+const LOCAL_WORDS = String.raw`(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala|naves?|nau)`;
+const LOCAL_PART = new RegExp(String.raw`^\s*${LOCAL_WORDS}(?![\p{L}])`, 'iu');
+const LOCAL_TAIL = new RegExp(String.raw`(\b\d+\s*[a-z]?)\s+${LOCAL_WORDS}(?![\p{L}]).*$`, 'iu');
+// «C.C.GRAN VIA- GRAN VIA, 75» o «CENTRO COMERCIAL X, CALLE…»: el nombre del centro comercial delante de la calle.
+const MALL = /^\s*(?:c\.\s?c\.?|c\.c\b|centro comercial|centre comercial)\s*[^,-]*(?:-\s*|,\s*(?=[^,]*,))/i;
+// Calles que solo con su nombre corto el buscador confunde con otra, por población.
+const STREET_ALIAS = { "L'Hospitalet de Llobregat": [[/^\s*gran\s+via\b/i, 'Avinguda de la Gran Via']] };
 const DISTRICTS = new Set(['ciutat vella', 'eixample', 'sants montjuic', 'les corts', 'sarria sant gervasi', 'gracia',
   'horta guinardo', 'nou barris', 'sant andreu', 'sant marti']);
 
 export function normalizeAddress(q) {
-  let s = String(q || '').trim().replace(/\s+/g, ' ');
+  let s = String(q || '').trim().replace(/\s+/g, ' ').replace(MALL, '');
   for (const [re, rep] of TYPE_ES_CA) s = s.replace(re, rep);
   // Los tramos de la Rambla (Canaletes, Caputxins, Santa Mònica…) son una sola calle con una sola numeración
   // en el callejero: «Rambla dels Caputxins 31» no la encuentra nadie; «La Rambla 31» sí.
@@ -71,13 +78,14 @@ export function normalizeAddress(q) {
   s = s.replace(/ de las /gi, ' de les ').replace(/ de los /gi, ' dels ').replace(/\bn[ºo°]\.?\s*/gi, '');
   // Lo que va tras el número es del local ("75 LOCAL 2", "12 BAJOS", "3 PISO 2"): los buscadores no lo
   // entienden y no devuelven nada. Se busca el portal.
-  const parts = s.split(',').map((p) => p.replace(/(\b\d+\s*[a-z]?)\s+(?:local|loc\.|bajos|baixos|bjos?\.?|bxs\.?|tienda|botiga|planta|piso|pis|esc\.?|escalera|escala)\b.*$/i, '$1'))
+  const parts = s.split(',').map((p) => p.replace(LOCAL_TAIL, '$1'))
     // Lo mismo en un trozo aparte ("25, LOCAL IZQUIERDA", "54, BAJOS") y el distrito metido en medio
     // ("31, CIUTAT VELLA, BARCELONA"): con eso el buscador no encuentra nada o da el número de enfrente.
     .filter((p, i, all) => i === 0 || i === all.length - 1 || !(LOCAL_PART.test(p) || DISTRICTS.has(fold(p).replace(/[^a-z]+/g, ' ').trim())));
   if (parts.length > 1) {
     const town = TOWN_ES_CA[fold(parts[parts.length - 1])];
     if (town) parts[parts.length - 1] = ` ${town}`;
+    for (const [re, rep] of STREET_ALIAS[town] || []) parts[0] = parts[0].replace(re, rep);
   }
   return parts.join(',').trim();
 }
