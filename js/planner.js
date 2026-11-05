@@ -29,8 +29,10 @@ function haveFreshPairs(keys, pairs, src, maxAgeMin) {
  * orsKey: openrouteservice (tiempos de conducción). tomtomKey + live: corrección con tráfico (no se guarda).
  * parking: aparcamientos aceptados [{ids, lat, lon}]: entre paradas del mismo se va a pie pasando por la furgoneta.
  * parkedAt: índice del aparcamiento donde está ahora la furgoneta (si se sale andando desde from).
+ * fixedOrder: ids en el orden que ha puesto el repartidor. Se respeta y solo se calculan las horas; las paradas
+ * que no estén (añadidas después) van al final y los ids que ya no existen se ignoran.
  */
-export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, pairs = {}, maxAgeMin = 90, returnToDepot = true, parking = [], parkedAt = null }) {
+export async function computePlan({ from, stops, depot, startMin, departAt, orsKey, tomtomKey, live, pairs = {}, maxAgeMin = 90, returnToDepot = true, parking = [], parkedAt = null, fixedOrder = null }) {
   if (stops.length === 0) return { order: [], legs: [], end: startMin, late: 0, wait: 0, km: 0, pairs };
   const src = orsKey ? 'ors' : 'estimate';
   const dests = [...stops, depot];
@@ -81,7 +83,14 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
     returnTo: returnToDepot,
     stops: stops.map((s, i) => ({ windows: s.windows || [], service: (s.service ?? 10) + wp[i].extra })),
   };
-  let best = optimize(ctx);
+  let fixed = null;
+  if (Array.isArray(fixedOrder)) {
+    const pos = new Map(stops.map((s, i) => [s.id, i + 1]));
+    const listed = [...new Set(fixedOrder)].filter((id) => pos.has(id)).map((id) => pos.get(id));
+    fixed = [...listed, ...stops.map((_, i) => i + 1).filter((i) => !listed.includes(i))];
+  }
+  const solve = () => (fixed ? evaluateOrder(fixed, ctx) : optimize(ctx));
+  let best = solve();
 
   // Con TomTom: se piden los tiempos con tráfico de la ruta elegida (una consulta), se corrigen esos tramos
   // y se vuelve a optimizar; si el orden cambia, se comprueba también el nuevo (máximo 3 consultas).
@@ -103,7 +112,7 @@ export async function computePlan({ from, stops, depot, startMin, departAt, orsK
         if (onFoot(a, b)) return; // ese tramo se hace andando: el tráfico no cuenta
         if (b === n + 1) back[a] = travel(a, b, m); else matrix[a][b] = travel(a, b, m);
       });
-      const again = optimize(ctx);
+      const again = solve();
       best = again.order.join(',') === key ? evaluateOrder(best.order, ctx) : again;
     }
   }

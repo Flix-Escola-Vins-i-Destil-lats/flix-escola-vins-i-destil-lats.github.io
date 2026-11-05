@@ -24,6 +24,7 @@ En su ficha se marca también cómo es **con el horario**: *Estricto* (sin marge
 - **Direcciones:** geocodificador oficial del ICGC y, si no encuentra la dirección, CartoCiudad (IGN). Los dos son CC BY 4.0, así que se pueden guardar y compartir entre repartidores. Antes de buscar, la app traduce "Calle Mayor, Esplugas" a "Carrer Major, Esplugues". Si el resultado cae en otra población o en otra calle, la parada queda "Sin ubicar" hasta que la confirmes.
 - **Locales por su nombre:** OpenStreetMap (Nominatim), como mucho una petición por segundo.
 - **Tiempos de conducción:** openrouteservice, con una clave gratuita de account.heigit.org (500 consultas al día, la app gasta unas 20). Sin clave, la app ordena las paradas por distancia aproximada.
+- **Las claves son de cada repartidor.** Cada uno pone las suyas en Ajustes y se quedan en su móvil: ni «Pasar configuración» ni la copia de seguridad las llevan, y si un archivo antiguo las trae, al importarlo se ignoran.
 - **Mapa:** cartografía del ICGC (CC BY 4.0, con datos de OpenStreetMap fuera de Cataluña), dibujada con Leaflet (incluido en `vendor/`).
 - **Tráfico en tiempo real (opcional):** clave gratuita de TomTom (20.000 rutas al mes). Por cada cálculo, la app pide a TomTom la ruta elegida (de 1 a 3 consultas), corrige los tramos con atasco y vuelve a optimizar. Esos tiempos no se guardan, porque las condiciones de TomTom no lo permiten.
 

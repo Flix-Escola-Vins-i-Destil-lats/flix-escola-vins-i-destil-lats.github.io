@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.13.4';
+export const VERSION = '1.14.0';
 
 // ---------- Utilidades ----------
 
@@ -30,6 +30,8 @@ const I = {
   paste: '<svg viewBox="0 0 24 24"><path d="M9 4h6v3H9zM8 5.5H6.5A1.5 1.5 0 0 0 5 7v12.5A1.5 1.5 0 0 0 6.5 21h11a1.5 1.5 0 0 0 1.5-1.5V7a1.5 1.5 0 0 0-1.5-1.5H16M8.5 12h7M8.5 16h5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>',
   spark: '<svg viewBox="0 0 24 24"><path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M6 18l2.5-2.5M15.5 8.5 18 6" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>',
   go: '<svg viewBox="0 0 24 24"><path d="M5 12h13M13 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  up: '<svg viewBox="0 0 24 24"><path d="m5 15 7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  down: '<svg viewBox="0 0 24 24"><path d="m5 9 7 7 7-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   left: '<svg viewBox="0 0 24 24"><path d="m15 5-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   right: '<svg viewBox="0 0 24 24"><path d="m9 5 7 7-7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M12 11v6M12 7.5v.5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>',
@@ -206,6 +208,7 @@ function signature(r) {
     settings().shiftStart, settings().returnToDepot, !!settings().orsKey, !!settings().tomtomKey, !!settings().useWindows,
     r.stops.map((s) => [s.id, s.lat, s.lon, s.windows, s.service, s.timing || '', !!s.windowsConfirmed]),
     parkingFor(r).map((p) => [p.ids, p.lat, p.lon]),
+    r.manual || null,
   ]);
 }
 const isDirty = (r) => !r.plan || r.planSig !== signature(r);
@@ -305,7 +308,7 @@ function firstSteps() {
     <div class="serif">Primeros pasos</div>
     <ol class="steps">
       ${step(!!s.orsKey, 1, 'Configura la app',
-        `<div class="small muted">Si un compañero te ha pasado su configuración, impórtala y listo. Si no, pon tu clave gratuita en Ajustes.</div>
+        `<div class="small muted">Pon tu clave gratuita en Ajustes: es solo tuya, cada repartidor tiene la suya. Si un compañero te pasa su configuración, impórtala y tendrás el almacén y sus clientes.</div>
          <div class="actions2" style="margin:10px 0 0">
            <label class="btn line" style="cursor:pointer">Importar archivo<input type="file" id="import-file" accept="application/json,.json" hidden></label>
            <button class="btn ghost" data-action="tab" data-tab="settings">Ir a Ajustes</button>
@@ -315,7 +318,10 @@ function firstSteps() {
          <button class="btn ghost block" data-action="demo" style="margin-top:10px">Probar con una ruta de ejemplo</button>`)}
       ${step(false, 3, portalApp() ? 'Trae tu ruta de verdad' : 'Pega tu ruta de verdad', portalApp()
         ? `<div class="small muted">Toca «Traer la ruta del portal», entra con tu usuario del portal (solo la primera vez) y pulsa el botón dorado. Ahí mismo puedes pedir que te avise cuando salga la ruta de mañana.</div>`
-        : `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
+        : isIOS
+          // En iPhone no se puede compartir a una web instalada: siempre copiar y pegar.
+          ? `<div class="small muted">Desde el portal o un mensaje: copia la lista y usa «Pegar lista». Con el albarán en papel: haz una foto, mantén el dedo sobre el texto, «Seleccionar todo» → «Copiar», y pégalo en «Pegar lista».</div>`
+          : `<div class="small muted">Desde el portal o el albarán: copia la lista y usa «Pegar lista», o compártela desde WhatsApp a Ruta. Con el albarán en papel: Google Lens → Texto → Compartir → Ruta.</div>`)}
     </ol>
   </div>`;
 }
@@ -412,8 +418,9 @@ function renderPlanning(r) {
   </div>`;
 
   if (stops.length) {
-    html += `<div class="section-head"><h2 class="section-title">${dirty ? 'Paradas' : 'Orden óptimo'}</h2>
-      <button class="btn line small" data-action="open-map">${I.map}Mapa</button></div><ol class="stops">`;
+    if (r.manual && !dirty) html += manualNotice();
+    html += `<div class="section-head"><h2 class="section-title">${dirty ? 'Paradas' : r.manual ? 'Tu orden' : 'Orden óptimo'}</h2>
+      <span class="head-btns">${reorderButton(r)}<button class="btn line small" data-action="open-map">${I.map}Mapa</button></span></div><ol class="stops">`;
     html += stops.map((st, i) => stopCard(st, i + 1, legs.get(st.id), '', parkingOf(r, st.id))).join('');
     html += '</ol>';
   }
@@ -439,6 +446,43 @@ function renderPlanning(r) {
     html += '</div>';
   }
   return html;
+}
+
+// ---------- Orden a mano ----------
+
+// Paradas que se pueden ordenar: las pendientes y ubicadas, en el orden actual (en ruta, la actual primero).
+function reorderIds(r) {
+  const pending = (x) => x && !x.done && located(x);
+  if (r.status === 'active') {
+    const byId = new Map(r.stops.map((x) => [x.id, x]));
+    const ids = [r.current, ...(r.plan?.order || [])].filter((id, i, all) => all.indexOf(id) === i && pending(byId.get(id)));
+    return [...ids, ...r.stops.filter((x) => pending(x) && !ids.includes(x.id)).map((x) => x.id)];
+  }
+  return orderedStops(r).filter(pending).map((x) => x.id);
+}
+const reorderButton = (r) => (reorderIds(r).length > 1 ? '<button class="btn line small" data-action="open-reorder">Cambiar orden</button>' : '');
+const manualNotice = () => `<div class="notice gold compact">${I.info}<div class="grow">Orden puesto por ti: «Recalcular» y «Siguiente» lo mantienen y solo cambian las horas.</div>
+  <button class="btn line" data-action="order-auto" style="min-height:40px;padding:0 12px">Orden óptimo</button></div>`;
+
+function sheetReorder(sh) {
+  const r = currentRoute();
+  const byId = new Map(r.stops.map((x) => [x.id, x]));
+  const list = sh.order.map((id) => byId.get(id)).filter(Boolean);
+  const last = list.length - 1;
+  const first = r.status === 'active' ? r.stops.filter((x) => x.done).length + 1 : 1;
+  return `<h2 id="sheet-title">Cambiar el orden</h2>
+    <div class="small muted" style="margin:-6px 0 12px">Sube o baja las paradas. Al guardar calculo las horas con tu orden y te aviso si alguien queda fuera de su horario.${r.status === 'active' ? ' La primera de la lista es la siguiente a la que vas.' : ''}</div>
+    <ol class="reorder">${list.map((x, i) => `<li>
+      <span class="num" aria-hidden="true">${first + i}</span>
+      <span class="grow"><b>${esc(x.name || x.address)}</b><span class="tiny faint ellipsis">${esc(x.label || x.address || '')}</span></span>
+      <button class="iconbtn" data-action="reorder-move" data-id="${esc(x.id)}" data-d="-1" aria-label="Subir ${esc(x.name || '')}" ${i === 0 ? 'disabled' : ''}>${I.up}</button>
+      <button class="iconbtn" data-action="reorder-move" data-id="${esc(x.id)}" data-d="1" aria-label="Bajar ${esc(x.name || '')}" ${i === last ? 'disabled' : ''}>${I.down}</button>
+    </li>`).join('')}</ol>
+    <div class="foot">
+      <button class="btn gold big block" data-action="reorder-save">Guardar este orden</button>
+      ${r.manual ? '<button class="btn line block" data-action="order-auto">Volver al orden óptimo</button>' : ''}
+      <button class="btn ghost block" data-action="close">Cancelar</button>
+    </div>`;
 }
 
 function enRouteBar(r) {
@@ -497,8 +541,9 @@ function renderActive(r) {
 
   const upcoming = (r.plan?.order || []).filter((id) => id !== r.current).map((id) => r.stops.find((x) => x.id === id)).filter((x) => x && !x.done);
   if (upcoming.length) {
+    if (r.manual) html += manualNotice();
     html += `<div class="section-head"><h2 class="section-title">Después</h2>
-      <button class="btn line small" data-action="open-map">${I.map}Mapa</button></div><ol class="stops">${upcoming.map((x, i) => stopCard(x, finished + i + 2, legs.get(x.id), '', parkingOf(r, x.id))).join('')}</ol>`;
+      <span class="head-btns">${reorderButton(r)}<button class="btn line small" data-action="open-map">${I.map}Mapa</button></span></div><ol class="stops">${upcoming.map((x, i) => stopCard(x, finished + i + 2, legs.get(x.id), '', parkingOf(r, x.id))).join('')}</ol>`;
   }
   html += finishedList(r);
   html += `<div style="text-align:center;margin-top:18px"><button class="linkbtn" data-action="stop-route">Volver a planificar</button></div>`;
@@ -628,7 +673,7 @@ function renderSettings() {
   <div class="card">
     <div class="small muted" style="margin-bottom:12px"><b>Copia de seguridad:</b> guarda clientes, horarios y rutas (sin tus claves) en Drive o en un mensaje a ti mismo. ${backupAge()}</div>
     <button class="btn line block" data-action="backup">Hacer copia de seguridad</button>
-    <div class="small muted" style="margin:16px 0 12px"><b>Para un compañero nuevo:</b> «Pasar configuración» le deja la app lista (claves, almacén, horario y tus clientes). Lleva tus claves: mándalo solo por privado.
+    <div class="small muted" style="margin:16px 0 12px"><b>Para un compañero nuevo:</b> «Pasar configuración» le pasa el almacén, el horario y tus clientes. Tus claves no se pasan nunca: cada uno pone la suya en Ajustes.
       «Pasar clientes» manda solo direcciones y horarios. Al <b>importar</b> nada se borra: se suma a lo que ya hay.</div>
     <button class="btn line block" data-action="export-config">Pasar configuración</button>
     <div class="actions2" style="margin:10px 0 0">
@@ -654,7 +699,7 @@ function renderSettings() {
 const background = () => [$('.top'), $('#view'), $('.tabs'), $('#actionbar')];
 
 function snapshot(sh) {
-  return JSON.stringify(sh.draft ?? sh.text ?? '');
+  return JSON.stringify(sh.draft ?? sh.order ?? sh.text ?? '');
 }
 
 function openSheet(sheet) {
@@ -716,6 +761,7 @@ function renderSheet() {
   if (sh.kind === 'stop') body = sheetStop(sh);
   else if (sh.kind === 'paste') body = sheetPaste(sh);
   else if (sh.kind === 'depot') body = sheetDepot(sh);
+  else if (sh.kind === 'reorder') body = sheetReorder(sh);
   wrap.innerHTML = `<div class="sheet" role="dialog" aria-modal="true" aria-labelledby="sheet-title" tabindex="-1"><div class="grab" aria-hidden="true"></div>${body}</div>`;
   $('.sheet', wrap).scrollTop = scroll;
 }
@@ -1042,11 +1088,12 @@ async function optimize({ recalc = false } = {}) {
   ui.busy = live && s.tomtomKey ? 'Mirando el tráfico ahora mismo…' : s.tomtomKey && s.orsKey ? 'Calculando con el tráfico previsto…' : 'Calculando la mejor ruta…';
   render();
   try {
-    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live, pairs: {}, returnToDepot: s.returnToDepot, parking: parkingFor(r) });
+    const plan = await computePlan({ from: s.depot, depot: s.depot, stops, startMin, departAt, orsKey: s.orsKey, tomtomKey: s.tomtomKey, live, pairs: {}, returnToDepot: s.returnToDepot, parking: parkingFor(r), fixedOrder: r.manual || null });
     r.pairs = plan.pairs; delete plan.pairs;
     r.plan = plan; r.planSig = signature(r); r.status = 'planned';
     store.save();
-    const what = !recalc ? 'Ruta optimizada'
+    const what = r.manual ? `Horas con tu orden · vuelta ${fmt(plan.end)}${plan.late > 0.5 ? ' · alguien queda fuera de horario' : ''}`
+      : !recalc ? 'Ruta optimizada'
       : before && before !== plan.order.join() ? `He cambiado el orden · vuelta ${fmt(plan.end)}` : `Mismo orden · vuelta ${fmt(plan.end)}`;
     toast(plan.warning ? `Ruta aproximada (${plan.warning}). Revisa la clave en Ajustes.` : what, plan.warning ? 6000 : 3200);
   } catch (e) {
@@ -1100,7 +1147,7 @@ async function replanActive(msg) {
   try {
     const plan = await computePlan({
       from, depot: s.depot, startMin: nowMin(), departAt: new Date(), orsKey: s.orsKey, tomtomKey: s.tomtomKey, live: true,
-      stops: active.map(planStop), pairs: r.pairs || {}, returnToDepot: s.returnToDepot, parking, parkedAt,
+      stops: active.map(planStop), pairs: r.pairs || {}, returnToDepot: s.returnToDepot, parking, parkedAt, fixedOrder: r.manual || null,
     });
     r.pairs = plan.pairs; delete plan.pairs;
     plan.order.push(...r.postponed.filter((id) => postponed.has(id)));
@@ -1183,7 +1230,7 @@ function undoLast() {
 // ---------- Eventos ----------
 
 // Mientras se calcula algo de la ruta, estas acciones esperan: evita estados a medias.
-const BLOCKED_WHILE_BUSY = new Set(['next', 'postpone', 'undo', 'edit-stop', 'recalc', 'start-route', 'park-clear', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
+const BLOCKED_WHILE_BUSY = new Set(['open-reorder', 'reorder-save', 'order-auto', 'next', 'postpone', 'undo', 'edit-stop', 'recalc', 'start-route', 'park-clear', 'optimize', 'stop-route', 'open-stop', 'open-paste', 'remove-stop', 'day', 'demo', 'clear-demo', 'park-undo', 'open-map']);
 
 const actions = {
   tab: async (el) => { if (!(await requestCloseSheet())) return; ui.tab = el.dataset.tab; render(); window.scrollTo(0, 0); },
@@ -1201,6 +1248,39 @@ const actions = {
     replanActive('Dejada para el final');
   },
   undo: () => undoLast(),
+  'open-reorder': () => {
+    const ids = reorderIds(currentRoute());
+    if (ids.length < 2) return toast('Hace falta más de una parada pendiente');
+    openSheet({ kind: 'reorder', order: ids });
+  },
+  'reorder-move': (el) => {
+    const o = ui.sheet?.order;
+    if (!o) return;
+    const i = o.indexOf(el.dataset.id), j = i + Number(el.dataset.d);
+    if (i < 0 || j < 0 || j >= o.length) return;
+    [o[i], o[j]] = [o[j], o[i]];
+    renderSheet();
+    // El foco sigue en la misma flecha, para mover varias posiciones seguidas (también con lector de pantalla).
+    const sel = `[data-action="reorder-move"][data-id="${CSS.escape(el.dataset.id)}"]`;
+    const again = $(`${sel}[data-d="${el.dataset.d}"]`);
+    (again && !again.disabled ? again : $(`${sel}:not([disabled])`))?.focus({ preventScroll: true });
+  },
+  'reorder-save': async () => {
+    const r = currentRoute();
+    r.manual = [...ui.sheet.order];
+    closeSheet();
+    store.save();
+    if (r.status === 'active') await replanActive('Orden cambiado');
+    else await optimize();
+  },
+  'order-auto': async () => {
+    const r = currentRoute();
+    r.manual = null;
+    if (ui.sheet) closeSheet();
+    store.save();
+    if (r.status === 'active') await replanActive('Vuelta al orden óptimo');
+    else await optimize();
+  },
   'stop-route': async () => {
     if (!(await ask('¿Volver a planificar? Las paradas hechas se mantienen marcadas.', { ok: 'Volver a planificar' }))) return;
     const r = currentRoute();
@@ -1427,8 +1507,8 @@ function exportClients() {
 }
 
 async function exportConfig() {
-  if (!settings().orsKey && !settings().tomtomKey) return toast('Primero pon tus claves en Ajustes');
-  const ok = await ask('El archivo lleva tus claves de rutas y tráfico. Pásalo solo por privado a compañeros de Escolà, nunca en grupos ni redes.', { ok: 'Entendido, pasar' });
+  // Sin claves, pero con las direcciones y teléfonos de los clientes: por privado y solo a compañeros.
+  const ok = await ask('El archivo lleva el almacén y tus clientes (direcciones y teléfonos), sin tus claves. Pásalo solo por privado a compañeros de Escolà.', { ok: 'Pasar' });
   if (ok) shareFile(store.exportConfig(), `configuracion-ruta-${todayIso()}.json`, 'Configuración · Ruta Escolà');
 }
 
@@ -1511,7 +1591,7 @@ document.addEventListener('change', (e) => {
         const data = JSON.parse(txt);
         if (data?.kind === 'config') {
           const n = Object.keys(data.clients || {}).length;
-          const ok = await ask(`Configuración de un compañero: claves, almacén, horario y ${plural(n, 'cliente', 'clientes')}. ¿Aplicarla? No se borra nada tuyo.`, { ok: 'Aplicar' });
+          const ok = await ask(`Configuración de un compañero: almacén, horario y ${plural(n, 'cliente', 'clientes')}. Sus claves no: pon las tuyas en Ajustes. ¿Aplicarla? No se borra nada tuyo.`, { ok: 'Aplicar' });
           if (!ok) return;
           applied = store.applyConfig(data.settings);
         }

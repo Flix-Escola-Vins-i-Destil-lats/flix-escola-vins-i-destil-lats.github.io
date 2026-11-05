@@ -220,12 +220,12 @@ export function isoDate(d = new Date()) {
 
 // ---------- Compartir memoria con compañeros ----------
 
-// Configuración para un compañero: claves, almacén, jornada y clientes. Lleva las claves: solo por privado.
+// Configuración para un compañero: almacén, jornada y clientes. Nunca las claves: cada uno pone la suya.
 export function exportConfig() {
-  const { orsKey, tomtomKey, depot, shiftStart, service, returnToDepot, nav } = state.settings;
+  const { depot, shiftStart, service, returnToDepot, nav } = state.settings;
   return JSON.stringify({
-    app: 'ruta-escola', kind: 'config', version: 3, exportedAt: new Date().toISOString(),
-    settings: { orsKey, tomtomKey, depot, shiftStart, service, returnToDepot, nav }, clients: state.clients,
+    app: 'ruta-escola', kind: 'config', version: 4, exportedAt: new Date().toISOString(),
+    settings: { depot, shiftStart, service, returnToDepot, nav }, clients: state.clients,
   });
 }
 
@@ -233,9 +233,7 @@ export function exportConfig() {
 export function applyConfig(cfg) {
   if (!cfg || typeof cfg !== 'object') return [];
   const patch = {}, applied = [];
-  const key = (v) => (typeof v === 'string' && /^[A-Za-z0-9._=-]{8,500}$/.test(v.trim()) ? v.trim() : null);
-  if (key(cfg.orsKey)) { patch.orsKey = key(cfg.orsKey); applied.push('clave de rutas'); }
-  if (key(cfg.tomtomKey)) { patch.tomtomKey = key(cfg.tomtomKey); applied.push('clave de tráfico'); }
+  // Las claves de un archivo (las configuraciones antiguas las llevaban) no se usan nunca: son de quien lo mandó.
   const d = cfg.depot;
   const lat = num(d?.lat, -90, 90), lon = num(d?.lon, -180, 180);
   if (lat !== null && lon !== null) { patch.depot = { name: str(d.name, 120) || 'Almacén', lat, lon }; applied.push('almacén'); }

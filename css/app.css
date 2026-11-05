@@ -417,3 +417,12 @@ body.map-open { overflow: hidden; }
 
 /* Horario confirmado con el cliente (ficha) */
 .toggle.confirm { margin-top: 10px; }
+
+/* Cambiar el orden a mano */
+.head-btns { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+.reorder { list-style: none; padding: 0; margin: 0 0 14px; display: grid; gap: 8px; }
+.reorder li { display: grid; grid-template-columns: 30px minmax(0, 1fr) 44px 44px; gap: 8px; align-items: center; background: var(--surface-2); border-radius: 12px; padding: 8px 8px 8px 10px; }
+.reorder .num { width: 30px; height: 30px; border-radius: 50%; display: grid; place-items: center; font: 600 16px/1 var(--serif); color: var(--gold-2); border: 1px solid var(--line); }
+.reorder b { display: block; font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+.reorder .ellipsis { display: block; }
+.reorder .iconbtn:disabled { opacity: .3; }

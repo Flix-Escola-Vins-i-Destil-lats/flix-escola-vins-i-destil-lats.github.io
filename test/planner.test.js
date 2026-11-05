@@ -86,3 +86,31 @@ test('si openrouteservice falla, calcula una ruta aproximada y avisa (no se qued
   assert.match(p.warning, /clave/);
   assert.ok(Object.values(p.pairs).every((x) => x.src === 'estimate')); // no se reutilizarán como si fueran reales
 });
+
+test('orden puesto a mano: se respeta y solo se calculan las horas (también con TomTom y paradas nuevas)', async () => {
+  const three = [...stops, { id: 'c', lat: 41.40, lon: 2.10, windows: [], service: 5 }];
+  const auto = await computePlan({ ...base, stops: three });
+  assert.deepEqual(auto.order, ['a', 'b', 'c']);
+  const hand = await computePlan({ ...base, stops: three, fixedOrder: ['c', 'a', 'b'] });
+  assert.deepEqual(hand.order, ['c', 'a', 'b']);
+  assert.ok(hand.end > auto.end, 'el orden a mano es más largo y se nota en la hora de vuelta');
+  assert.ok(hand.legs[0].arrive < hand.legs[1].arrive && hand.legs[1].arrive < hand.legs[2].arrive);
+  // Paradas que no estaban en el orden (añadidas después) van al final; ids que ya no existen se ignoran.
+  const later = await computePlan({ ...base, stops: three, fixedOrder: ['b', 'zz', 'a'] });
+  assert.deepEqual(later.order, ['b', 'a', 'c']);
+  // Con TomTom: un atasco que antes cambiaba el orden ya no lo cambia.
+  const near = (p, q) => Math.abs(p[0] - q.lat) < 1e-4 && Math.abs(p[1] - q.lon) < 1e-4;
+  jam = (from, to) => (near(from, depot) && near(to, stops[0]) ? 60 : 5);
+  const tt = await computePlan({ ...base, stops, tomtomKey: 't', live: true, fixedOrder: ['a', 'b'] });
+  jam = null;
+  assert.deepEqual(tt.order, ['a', 'b']);
+  assert.equal(tt.source, 'tomtom');
+  assert.ok(tt.legs[0].drive >= 60, 'el atasco se ve en la hora de llegada');
+});
+
+test('con la ventana de un cliente, el orden a mano avisa de que llegas tarde', async () => {
+  const w = [{ ...stops[0], windows: [[450, 470]] }, stops[1]]; // «a» cierra a las 7:50
+  const hand = await computePlan({ ...base, stops: w, fixedOrder: ['b', 'a'] });
+  assert.deepEqual(hand.order, ['b', 'a']);
+  assert.ok(hand.late > 0);
+});
