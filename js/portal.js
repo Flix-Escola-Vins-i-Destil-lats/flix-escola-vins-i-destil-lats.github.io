@@ -289,6 +289,19 @@ function bridge() {
   }).catch((err) => say('No he podido leer la ruta (' + q(err.message) + '). ¿Has iniciado sesión?'));
 }
 
+/**
+ * La ruta que manda la APK: «#portal=<json>&n=<código>». El código lo inventa esta web, se lo pasa a la APK
+ * al abrir el portal y la APK lo devuelve: un enlace de WhatsApp con «#portal=…» no lo sabe.
+ * → null si no es una ruta; { text, verified } si lo es.
+ */
+export function readPortalHash(hash, nonce) {
+  const m = /^#portal=([^&]*)(?:&n=([^&]*))?/i.exec(String(hash || ''));
+  if (!m) return null;
+  let text = '';
+  try { text = decodeURIComponent(m[1]); } catch { /* mal codificada */ }
+  return { text, verified: !!text && !!nonce && /^[0-9a-f-]{36}$/i.test(nonce) && m[2] === nonce };
+}
+
 // Sin saltos de línea ni sangría, y codificando solo lo imprescindible para que quepa en un favorito.
 export const BRIDGE_URL = 'javascript:' + `(${bridge.toString()})()`
   .replace(/\n\s*/g, '')

@@ -6,10 +6,10 @@ import { bigOrder } from './portal.js';
 import { oddHours, ODD_WINDOWS } from './hours.js';
 import { planWindows as marginWindows, STRICT_MARGIN, FLEX_EXTRA, LATE_OK_MORNING, LATE_OK_AFTERNOON } from './hours.js';
 import { serviceStart } from './solver.js';
-import { parsePortal } from './portal.js';
+import { parsePortal, readPortalHash } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.13.3';
+export const VERSION = '1.13.4';
 
 // ---------- Utilidades ----------
 
@@ -119,8 +119,8 @@ const planStop = (x) => ({ id: x.id, lat: x.lat, lon: x.lon, windows: planWindow
 function loadChip(x) {
   const l = x.load;
   if (!l || (!l.boxes && !l.bottles)) return '';
-  const what = [l.boxes ? plural(l.boxes, 'caja', 'cajas') : '', l.loose ? `${l.loose} sueltas` : ''].filter(Boolean).join(' + ');
-  return bigOrder(l) ? `<span class="chip big">Pedido grande · ${what} · ~${l.bottles} bot.</span>` : `<span class="chip any">${what}</span>`;
+  const what = esc([l.boxes ? plural(l.boxes, 'caja', 'cajas') : '', l.loose ? `${l.loose} sueltas` : ''].filter(Boolean).join(' + '));
+  return bigOrder(l) ? `<span class="chip big">Pedido grande · ${what} · ~${esc(l.bottles)} bot.</span>` : `<span class="chip any">${what}</span>`;
 }
 function timingChip(x) {
   if (x.timing === 'strict') return '<span class="chip strict">Estricto</span>';
@@ -405,7 +405,7 @@ function renderPlanning(r) {
   const unloc = r.stops.filter((x) => !located(x)).length;
   if (unloc) html += `<div class="notice warn">${I.warn}<div>${unloc === 1 ? 'Hay 1 parada' : `Hay ${unloc} paradas`} sin ubicar. Tócala para buscar la dirección; mientras tanto no entra en la ruta.</div></div>`;
 
-  if (portalApp()) html += `<a class="btn gold big block" href="${PORTAL_INTENT}" style="margin:14px 0 10px">Traer la ruta del portal</a>`;
+  if (portalApp()) html += `<a class="btn gold big block" href="${esc(portalIntent())}" style="margin:14px 0 10px">Traer la ruta del portal</a>`;
   html += `<div class="actions2">
     <button class="btn ghost" data-action="open-paste">${I.paste}Pegar lista</button>
     <button class="btn ghost" data-action="open-stop">${I.plus}Añadir parada</button>
@@ -799,11 +799,15 @@ function serviceHint(sh) {
   return parts.length ? `<div class="hint">${esc(parts.join(' '))}</div>` : '';
 }
 
+// Lo que llegó por un enlace o compartido (no de la APK con su código): puede mandarlo cualquiera.
+const untrustedNotice = (sh) => (sh.untrusted ? `<div class="notice warn">${I.warn}<div>Esto ha llegado por un enlace o compartido, no desde tu app del portal. Añádelo solo si lo has mandado tú. No cambiará la dirección ni el teléfono de los clientes que ya tienes guardados.</div></div>` : '');
+
 function sheetPaste(sh) {
   if (sh.portal) return sheetPortal(sh);
   const items = sh.parsed;
   return `<h2 id="sheet-title">Pegar lista</h2>
     <div class="small muted" style="margin:-6px 0 12px" id="paste-help">Copia las paradas del portal, de un mensaje o escríbelas tú: una por línea, o separadas por una línea en blanco. Si pones horarios (9:00-11:30, de 10 a 13h…) los leo.</div>
+    ${untrustedNotice(sh)}
     <label class="field"><textarea class="input" id="f-paste" aria-label="Lista de paradas" aria-describedby="paste-help" placeholder="Vinos Paco - C/ Major 12, Sant Feliu - 9:00-11:30&#10;Bar La Plaça | Plaça de la Vila 3, Cornellà">${esc(sh.text || '')}</textarea></label>
     ${items ? `<h3 class="section-title" style="margin-top:4px">${items.length === 1 ? '1 parada detectada' : `${items.length} paradas detectadas`}</h3>
       <ul class="parsed">${items.map((it) => {
@@ -824,9 +828,10 @@ function sheetPortal(sh) {
   const have = new Set(store.route(date).stops.map((x) => clientKey(x.name)));
   const fresh = stops.filter((it) => !have.has(clientKey(it.name)));
   // Paradas que ya estaban pero sin la carga o las notas de factura que ahora trae el portal (traídas con una versión anterior).
-  const reload = stops.filter((it) => store.route(date).stops.some((x) => clientKey(x.name) === clientKey(it.name) && portalStale(x, it))).length;
-  return `<h2 id="sheet-title">Ruta del portal</h2>
+  const reload = sh.untrusted ? 0 : stops.filter((it) => store.route(date).stops.some((x) => clientKey(x.name) === clientKey(it.name) && portalStale(x, it))).length;
+  return `<h2 id="sheet-title">${sh.untrusted ? 'Ruta recibida' : 'Ruta del portal'}</h2>
     <div class="small muted" style="margin:-6px 0 12px">${esc(dayName(date).long)} · ${stops.length === 1 ? '1 parada' : `${stops.length} paradas`}${fresh.length < stops.length ? ` · ${stops.length - fresh.length} ya estaban en la ruta` : ''}</div>
+    ${untrustedNotice(sh)}
     <ul class="parsed">${stops.map((it) => {
       const mem = store.findClient(it.name);
       const dup = have.has(clientKey(it.name));
@@ -1319,7 +1324,8 @@ async function pasteAdd() {
   if (portal) ui.date = portal.date;
   const r = currentRoute();
   const have = new Set(r.stops.map((x) => clientKey(x.name)));
-  if (portal) {
+  const untrusted = !!sh.untrusted;
+  if (portal && !untrusted) {
     for (const it of sh.parsed) {
       const old = r.stops.find((x) => clientKey(x.name) === clientKey(it.name));
       if (!old) continue;
@@ -1343,19 +1349,22 @@ async function pasteAdd() {
     stop.name = (mem?.name || it.name).slice(0, 120);
     if (mem?.windowsConfirmed && mem.windows?.length) stop.windows = mem.windows.map((w) => [...w]);
     else if (it.windows.length) stop.windows = it.windows;
-    if (it.phone) stop.phone = it.phone;
-    const addressChanged = it.address && clientKey(it.address) !== clientKey(mem?.address || '');
-    if (it.address) stop.address = it.address;
+    // Lo recibido por un enlace no cambia a un cliente que ya tienes: se usan su dirección y su teléfono guardados.
+    const keepMem = untrusted && !!mem;
+    if (it.phone && !(keepMem && mem.phone)) stop.phone = it.phone;
+    const addressChanged = !keepMem && it.address && clientKey(it.address) !== clientKey(mem?.address || '');
+    if (it.address && !(keepMem && mem.address)) stop.address = it.address;
     if (!mem || addressChanged || !located(stop)) {
       stop.lat = null; stop.lon = null; stop.label = '';
       try {
-        const [hit] = await geocode(it.address || it.name, { kind: it.address ? 'address' : 'name' });
+        const [hit] = await geocode(stop.address || it.name, { kind: stop.address ? 'address' : 'name' });
         if (hit && !hit.doubt) Object.assign(stop, { lat: hit.lat, lon: hit.lon, label: hit.label, needsCheck: true });
       } catch { /* queda sin ubicar */ }
     }
     if (!located(stop)) unlocated++;
     const fields = stopFields(stop);
-    if (portal) {
+    if (keepMem) fields.notes = [mem.notes, portal ? it.notes : ''].filter(Boolean).join('\n').slice(0, 500);
+    else if (portal) {
       // Del portal se recuerda dónde está y el teléfono; el horario solo si vale para todos los días.
       store.rememberClient({ ...fields, notes: undefined, windowsConfirmed: undefined,
         windows: mem?.windowsConfirmed || !it.clientWindows.length ? undefined : it.clientWindows });
@@ -1548,7 +1557,18 @@ setInterval(() => {
 // ---------- Recibir una lista compartida (WhatsApp, portal, correo…) ----------
 
 // La APK (desde la 1.2.0) tiene una pantalla con el portal que trae la ruta; se abre con este enlace.
-const PORTAL_INTENT = 'intent://portal#Intent;scheme=rutaescola;package=com.flixescola.ruta;end';
+// Lleva un código que solo conoce esta web (en este móvil): la APK 1.5.0 lo devuelve con la ruta y así se sabe
+// que la ruta viene de ella y no de un enlace que alguien te ha mandado.
+const NONCE_KEY = 'ruta-portal-n';
+const storedNonce = () => { try { return localStorage.getItem(NONCE_KEY) || ''; } catch { return ''; } };
+function portalIntent() {
+  let n = storedNonce();
+  if (!/^[0-9a-f-]{36}$/i.test(n)) {
+    n = crypto.randomUUID();
+    try { localStorage.setItem(NONCE_KEY, n); } catch { /* sin almacenamiento: la ruta llegará sin verificar */ }
+  }
+  return `intent://portal#Intent;scheme=rutaescola;package=com.flixescola.ruta;S.n=${n};end`;
+}
 
 function portalApp() {
   try {
@@ -1559,25 +1579,27 @@ function portalApp() {
 
 // Lo que llega al abrir la app: una lista compartida (?text=), la ruta del portal que manda la APK
 // (#portal=, que nunca sale del móvil) y la versión de la APK (?apk=).
+// Cualquiera puede mandarte un enlace a esta web con ?text= o #portal=: solo es de fiar (trusted) la ruta
+// que trae el código que esta web dio a la APK. Lo demás se enseña con aviso y no cambia los clientes guardados.
 function incoming() {
   const q = new URLSearchParams(location.search);
   const apk = q.get('apk');
   if (apk) try { localStorage.setItem('ruta-apk', apk.slice(0, 20)); } catch { /* sin almacenamiento */ }
   let text = [q.get('title'), q.get('text'), q.get('url')].filter(Boolean).join('\n').trim();
-  if (location.hash.startsWith('#portal=')) {
-    try { text = decodeURIComponent(location.hash.slice('#portal='.length)); } catch { text = ''; }
-  }
+  let trusted = false;
+  const hash = readPortalHash(location.hash, storedNonce());
+  if (hash) ({ text, verified: trusted } = hash);
   if (location.search || location.hash) history.replaceState(null, '', location.pathname);
-  return text.slice(0, 100000);
+  return { text: text.slice(0, 100000), trusted };
 }
 
 // Lo recibido va a la hoja de "Pegar lista", ya leído, para revisarlo antes de añadir.
-function receive(text) {
+function receive({ text, trusted }) {
   if (!text) return;
   const portal = parsePortal(text);
   if (ui.sheet) closeSheet();
   if (ui.tab !== 'route') { ui.tab = 'route'; render(); }
-  openSheet({ kind: 'paste', text: portal ? '' : text, portal });
+  openSheet({ kind: 'paste', text: portal ? '' : text, portal, untrusted: !trusted });
   ui.sheet.parsed = portal ? portal.stops : parseList(text);
   ui.sheet.initial = '';
   renderSheet();

@@ -1,6 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseHorario, parsePortal, cleanOrderText, BRIDGE_URL } from '../js/portal.js';
+import { parseHorario, parsePortal, cleanOrderText, BRIDGE_URL, readPortalHash } from '../js/portal.js';
+
+test('la ruta del #portal solo vale si trae el código que la web dio a la APK', () => {
+  const n = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  const json = '{"ruta":"escola-portal","paradas":[]}';
+  const hash = `#portal=${encodeURIComponent(json)}`;
+  assert.deepEqual(readPortalHash(`${hash}&n=${n}`, n), { text: json, verified: true });
+  assert.equal(readPortalHash(hash, n).verified, false); // APK antigua o enlace: sin código
+  assert.equal(readPortalHash(`${hash}&n=${n.replace('0f', 'aa')}`, n).verified, false); // otro código
+  assert.equal(readPortalHash(`${hash}&n=${n}`, null).verified, false); // esta web nunca dio un código
+  assert.equal(readPortalHash(`${hash}&n=`, '').verified, false);
+  assert.equal(readPortalHash('#otra-cosa', n), null);
+  assert.equal(readPortalHash('#portal=%E0%A4%A&n=' + n, n).verified, false); // mal codificada
+});
 import { HORARIOS } from './fixtures/horarios-portal.mjs';
 
 const hm = (s) => { const [h, m = 0] = s.split(':').map(Number); return h * 60 + m; };
