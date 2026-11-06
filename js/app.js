@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.15.1';
+export const VERSION = '1.15.2';
 
 // ---------- Utilidades ----------
 
@@ -1570,30 +1570,57 @@ async function testOrs() {
   render();
 }
 
-function shareFile(json, name, title) {
+// Cómo acabó: 'shared' (por el menú de compartir), 'downloaded' (a la carpeta de descargas),
+// 'cancelled' (el menú se cerró sin elegir) o '' (no se pudo).
+// Android no deja compartir un .json por el menú, así que casi siempre acaba en descargas. Hay que
+// decirlo: si no, el botón parece roto aunque haya funcionado.
+async function shareFile(json, name, title) {
   const file = new File([json], name, { type: 'application/json' });
-  if (navigator.canShare?.({ files: [file] })) return navigator.share({ files: [file], title }).then(() => true, () => false);
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(file);
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  return Promise.resolve(true);
+  if (navigator.canShare?.({ files: [file] })) {
+    try { await navigator.share({ files: [file], title }); return 'shared'; } catch (e) {
+      if (e?.name === 'AbortError') return 'cancelled';
+      // Cualquier otro fallo del menú: se intenta como descarga.
+    }
+  }
+  try {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file);
+    a.download = name;
+    document.body.appendChild(a); // en algunos WebView un enlace suelto no descarga
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    return 'downloaded';
+  } catch { return ''; }
 }
 
-function exportClients() {
-  shareFile(store.exportClients(), `clientes-ruta-${todayIso()}.json`, 'Clientes · Ruta Escolà');
+// Un aviso por cada final, menos cuando el propio usuario cerró el menú.
+function toastFile(how, name) {
+  if (how === 'shared') return toast('Archivo compartido ✓');
+  if (how === 'downloaded') return toast(`Guardado en Descargas: ${name}. Mándalo por WhatsApp.`, 7000);
+  if (how !== 'cancelled') toast('No se ha podido crear el archivo.', 5000);
+}
+
+async function exportClients() {
+  const name = `clientes-ruta-${todayIso()}.json`;
+  toastFile(await shareFile(store.exportClients(), name, 'Clientes · Ruta Escolà'), name);
 }
 
 async function exportConfig() {
   // Sin claves, pero con las direcciones y teléfonos de los clientes: por privado y solo a compañeros.
   const ok = await ask('El archivo lleva el almacén y tus clientes (direcciones y teléfonos), sin tus claves. Pásalo solo por privado a compañeros de Escolà.', { ok: 'Pasar' });
-  if (ok) shareFile(store.exportConfig(), `configuracion-ruta-${todayIso()}.json`, 'Configuración · Ruta Escolà');
+  if (!ok) return;
+  const name = `configuracion-ruta-${todayIso()}.json`;
+  toastFile(await shareFile(store.exportConfig(), name, 'Configuración · Ruta Escolà'), name);
 }
 
 async function backup() {
-  const ok = await shareFile(store.exportBackup(), `copia-ruta-escola-${todayIso()}.json`, 'Copia de seguridad · Ruta Escolà');
-  if (ok) { store.markBackup(); toast('Copia guardada ✓'); render(); }
+  const name = `copia-ruta-escola-${todayIso()}.json`;
+  const how = await shareFile(store.exportBackup(), name, 'Copia de seguridad · Ruta Escolà');
+  if (how !== 'shared' && how !== 'downloaded') return toastFile(how, name);
+  store.markBackup();
+  toast(how === 'downloaded' ? `Copia guardada en Descargas: ${name}` : 'Copia guardada ✓', 7000);
+  render();
 }
 
 // ---------- Actualizaciones ----------
