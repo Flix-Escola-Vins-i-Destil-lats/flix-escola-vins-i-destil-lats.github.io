@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.15.2';
+export const VERSION = '1.15.3';
 
 // ---------- Utilidades ----------
 
@@ -321,7 +321,7 @@ function firstSteps() {
       ${step(!!s.orsKey, 1, 'Configura la app',
         `<div class="small muted">Pon tu clave gratuita en Ajustes: es solo tuya, cada repartidor tiene la suya. Si un compañero te pasa su configuración, impórtala y tendrás el almacén y sus clientes.</div>
          <div class="actions2" style="margin:10px 0 0">
-           <label class="btn line" style="cursor:pointer">Importar archivo<input type="file" id="import-file" accept="application/json,.json" hidden></label>
+           <label class="btn line" style="cursor:pointer">Importar archivo<input type="file" id="import-file" accept="application/json,.json,text/plain,.txt" hidden></label>
            <button class="btn ghost" data-action="tab" data-tab="settings">Ir a Ajustes</button>
          </div>`)}
       ${step(false, 2, 'Practica una ruta',
@@ -751,7 +751,7 @@ function renderSettings() {
     <button class="btn line block" data-action="export-config">Pasar configuración</button>
     <div class="actions2" style="margin:10px 0 0">
       <button class="btn ghost" data-action="export">Pasar clientes</button>
-      <label class="btn ghost" style="cursor:pointer">Importar<input type="file" id="import-file" accept="application/json,.json" hidden></label>
+      <label class="btn ghost" style="cursor:pointer">Importar<input type="file" id="import-file" accept="application/json,.json,text/plain,.txt" hidden></label>
     </div>
     <div class="tiny ${ui.persisted ? 'faint' : 'warn-ink'}" style="margin-top:12px">${ui.persisted ? 'Datos protegidos: el móvil no los borrará aunque le falte espacio.' : 'El móvil podría borrar los datos si se queda sin espacio o borras los datos de Chrome: haz una copia de vez en cuando.'}</div>
   </div>
@@ -1575,51 +1575,52 @@ async function testOrs() {
 // Android no deja compartir un .json por el menú, así que casi siempre acaba en descargas. Hay que
 // decirlo: si no, el botón parece roto aunque haya funcionado.
 async function shareFile(json, name, title) {
-  const file = new File([json], name, { type: 'application/json' });
-  if (navigator.canShare?.({ files: [file] })) {
-    try { await navigator.share({ files: [file], title }); return 'shared'; } catch (e) {
-      if (e?.name === 'AbortError') return 'cancelled';
-      // Cualquier otro fallo del menú: se intenta como descarga.
+  // Android solo deja compartir unos pocos tipos de archivo y .json no está entre ellos, pero .txt sí.
+  // Se prueba con el nombre de verdad y, si el móvil no lo admite, con el mismo contenido en .txt:
+  // quien lo importa lo lee igual, porque mira el texto de dentro y no la extensión.
+  const alsoTxt = new File([json], name.replace(/\.json$/, '.txt'), { type: 'text/plain' });
+  for (const file of [new File([json], name, { type: 'application/json' }), alsoTxt]) {
+    if (!navigator.canShare?.({ files: [file] })) continue;
+    try { await navigator.share({ files: [file], title }); return { how: 'shared', name: file.name }; } catch (e) {
+      if (e?.name === 'AbortError') return { how: 'cancelled', name: file.name };
+      // Cualquier otro fallo del menú: se sigue probando y, al final, se descarga.
     }
   }
   try {
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(file);
+    a.href = URL.createObjectURL(new File([json], name, { type: 'application/json' }));
     a.download = name;
     document.body.appendChild(a); // en algunos WebView un enlace suelto no descarga
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    return 'downloaded';
-  } catch { return ''; }
+    return { how: 'downloaded', name };
+  } catch { return { how: '', name }; }
 }
 
 // Un aviso por cada final, menos cuando el propio usuario cerró el menú.
-function toastFile(how, name) {
+function toastFile({ how, name }) {
   if (how === 'shared') return toast('Archivo compartido ✓');
   if (how === 'downloaded') return toast(`Guardado en Descargas: ${name}. Mándalo por WhatsApp.`, 7000);
   if (how !== 'cancelled') toast('No se ha podido crear el archivo.', 5000);
 }
 
 async function exportClients() {
-  const name = `clientes-ruta-${todayIso()}.json`;
-  toastFile(await shareFile(store.exportClients(), name, 'Clientes · Ruta Escolà'), name);
+  toastFile(await shareFile(store.exportClients(), `clientes-ruta-${todayIso()}.json`, 'Clientes · Ruta Escolà'));
 }
 
 async function exportConfig() {
   // Sin claves, pero con las direcciones y teléfonos de los clientes: por privado y solo a compañeros.
   const ok = await ask('El archivo lleva el almacén y tus clientes (direcciones y teléfonos), sin tus claves. Pásalo solo por privado a compañeros de Escolà.', { ok: 'Pasar' });
   if (!ok) return;
-  const name = `configuracion-ruta-${todayIso()}.json`;
-  toastFile(await shareFile(store.exportConfig(), name, 'Configuración · Ruta Escolà'), name);
+  toastFile(await shareFile(store.exportConfig(), `configuracion-ruta-${todayIso()}.json`, 'Configuración · Ruta Escolà'));
 }
 
 async function backup() {
-  const name = `copia-ruta-escola-${todayIso()}.json`;
-  const how = await shareFile(store.exportBackup(), name, 'Copia de seguridad · Ruta Escolà');
-  if (how !== 'shared' && how !== 'downloaded') return toastFile(how, name);
+  const r = await shareFile(store.exportBackup(), `copia-ruta-escola-${todayIso()}.json`, 'Copia de seguridad · Ruta Escolà');
+  if (r.how !== 'shared' && r.how !== 'downloaded') return toastFile(r);
   store.markBackup();
-  toast(how === 'downloaded' ? `Copia guardada en Descargas: ${name}` : 'Copia guardada ✓', 7000);
+  toast(r.how === 'downloaded' ? `Copia guardada en Descargas: ${r.name}` : 'Copia guardada ✓', 7000);
   render();
 }
 
