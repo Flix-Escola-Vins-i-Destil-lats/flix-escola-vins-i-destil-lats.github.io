@@ -9,7 +9,7 @@ import { serviceStart } from './solver.js';
 import { parsePortal, readPortalHash, bridgeUrl } from './portal.js';
 import * as store from './store.js';
 
-export const VERSION = '1.15.0';
+export const VERSION = '1.15.1';
 
 // ---------- Utilidades ----------
 
@@ -46,6 +46,11 @@ const I = {
 const DUM_MINUTES = 30;
 const isIOS = /iPhone|iPad|iPod/i.test(navigator.userAgent);
 const isAndroid = /Android/i.test(navigator.userAgent);
+// En iPhone todos los navegadores son WebKit por dentro, así que solo el identificador los distingue.
+// Importa porque los marcadores con código solo se pueden tocar desde la lista en Safari, y porque
+// cada navegador guarda sus propios datos: la app y el portal tienen que estar en el mismo.
+const IOS_BROWSERS = [[/CriOS/, 'Chrome'], [/EdgiOS/, 'Edge'], [/FxiOS/, 'Firefox'], [/OPT\//, 'Opera']];
+const iosBrowser = isIOS ? (IOS_BROWSERS.find(([re]) => re.test(navigator.userAgent)) || ['', ''])[1] : '';
 // Instalada en la pantalla de inicio. En iPhone eso aísla sus datos de Safari y nada de fuera puede
 // entrarle: el marcador no puede devolverle la ruta, así que ahí toca copiar y pegar.
 const isStandalone = (() => {
@@ -643,6 +648,18 @@ function renderBridge() {
   <div class="card">
     <div class="small muted">Para traerla de un toque hace falta la APK: Chrome y Edge de Android no ejecutan los marcadores.
       Mientras tanto, copia la lista en el portal y usa <b>«Pegar lista»</b>, o compártela a Ruta.</div>
+  </div>`;
+  }
+  // En iPhone el marcador solo se puede tocar desde la lista en Safari. Y aunque se pudiera, cada
+  // navegador guarda sus datos aparte: con la app aquí y el portal en Safari, la ruta no llegaría.
+  if (iosBrowser) {
+    return `
+  <h2 class="section-title">Traer la ruta del portal</h2>
+  <div class="card">
+    <div class="notice warn" style="margin-top:0">${I.warn}<div>Para traer la ruta de un toque, abre Ruta en <b>Safari</b>: ${esc(iosBrowser)} no deja tocar el marcador desde la lista de marcadores.</div></div>
+    <div class="small muted">Haz toda la configuración en Safari, no aquí: cada navegador guarda sus propios clientes y su propia clave,
+      y el marcador lee el portal con la sesión del navegador en el que corre. Si la app está en Safari, el portal también tiene que estarlo.
+      <br><br>En ${esc(iosBrowser)} la ruta se mete copiando la lista del portal y pegándola en <b>«Pegar lista»</b>.</div>
   </div>`;
   }
   const aviso = isIOS && isStandalone
